@@ -57,14 +57,16 @@ class FormatTest(unittest.TestCase):
         with self.assertRaisesRegex(an.AnalysisError, "confirmed, specified, or assumed: the sender"):
             an.parse(TEXT.replace("- confirmed: the sender", "- the sender"))
 
-    def test_a_confirmed_finding_cites_the_code(self):
-        with self.assertRaisesRegex(an.AnalysisError, "cites no code: tests use unittest"):
-            an.parse(TEXT.replace(" [tests/test_send.py:1]", ""))
+    def test_a_confirmed_finding_with_no_citation_becomes_assumed(self):
+        fact = an.parse(TEXT.replace(" [tests/test_send.py:1]", "")).sections["Tests"][0]
+        self.assertEqual(fact.status, "assumed")
+        self.assertIn("tests use unittest (no valid citation", fact.text)
 
     def test_a_long_broken_citation_is_read_quickly(self):
         broken = "- confirmed: tests use unittest [" + "!/" * 40 + "\n"
-        with within(2), self.assertRaisesRegex(an.AnalysisError, "cites no code"):
-            an.parse(TEXT.replace("- confirmed: tests use unittest [tests/test_send.py:1]\n", broken))
+        with within(2):
+            a = an.parse(TEXT.replace("- confirmed: tests use unittest [tests/test_send.py:1]\n", broken))
+        self.assertEqual(a.sections["Tests"][0].status, "assumed")
 
 
 SPEC_TEXT = TEXT.replace(
@@ -96,9 +98,12 @@ class SpecifiedTest(unittest.TestCase):
 
     def test_a_specified_fact_cites_a_spec_doc(self):
         for bad in ("- specified: a send is retried", "- specified: a send is retried [src/send.py:1]"):
-            with self.subTest(bad=bad), self.assertRaisesRegex(an.AnalysisError, "cites no spec doc"):
-                an.parse(SPEC_TEXT.replace(
-                    "- specified: a failed send is retried 3 times [docs/design.md::Retries]", bad))
+            with self.subTest(bad=bad):
+                fact = an.parse(SPEC_TEXT.replace(
+                    "- specified: a failed send is retried 3 times [docs/design.md::Retries]",
+                    bad)).sections["Frameworks"][0]
+                self.assertEqual(fact.status, "assumed")
+                self.assertIn("(no valid citation", fact.text)
 
     def test_every_citation_that_exists_stays_specified(self):
         a = an.parse(SPEC_TEXT)
@@ -403,13 +408,11 @@ class AbsenceTest(unittest.TestCase):
         a = an.parse(ABSENT.replace("[src/]", "[src/send.py/]"))
         self.assertEqual(an.verify(a, project()), ["src/send.py/"])
 
-    def test_a_code_citation_still_needs_a_line_or_a_name(self):
-        with self.assertRaisesRegex(an.AnalysisError, "cites no code: tests use unittest"):
-            an.parse(TEXT.replace(" [tests/test_send.py:1]", " [tests/test_send.py]"))
-
-    def test_the_message_says_how_to_cite_what_is_missing(self):
-        with self.assertRaisesRegex(an.AnalysisError, r"folder that would hold it, \[\./\]"):
-            an.parse(TEXT.replace(" [tests/test_send.py:1]", ""))
+    def test_a_code_citation_with_no_line_or_name_makes_the_fact_assumed(self):
+        fact = an.parse(TEXT.replace(" [tests/test_send.py:1]",
+                                     " [tests/test_send.py]")).sections["Tests"][0]
+        self.assertEqual(fact.status, "assumed")
+        self.assertIn("[path:line] or [path::name]", fact.text)
 
     def test_a_roadmap_is_not_a_spec_doc(self):
         text = SPEC_TEXT.replace("[docs/design.md]", "[.tollgate/roadmaps/r.md]")
@@ -417,10 +420,11 @@ class AbsenceTest(unittest.TestCase):
         self.assertEqual(an.verify(a, spec_project(), ["docs"]), [".tollgate/roadmaps/r.md"])
         self.assertEqual(a.sections["Frameworks"][1].status, "assumed")
 
-    def test_a_specified_message_says_what_to_write_instead(self):
+    def test_a_specified_fact_cited_by_line_becomes_assumed_with_the_right_form(self):
         text = SPEC_TEXT.replace("[docs/design.md]", "[.tollgate/roadmaps/r.md:11]")
-        with self.assertRaisesRegex(an.AnalysisError, "write confirmed with a code citation, or assumed"):
-            an.parse(text)
+        fact = an.parse(text).sections["Frameworks"][1]
+        self.assertEqual(fact.status, "assumed")
+        self.assertIn("a specified fact [doc] or [doc::heading]", fact.text)
 
 
 class PointerTest(unittest.TestCase):
