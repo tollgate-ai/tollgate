@@ -100,8 +100,8 @@ class Store:
             started = self._start(start, commit) if start else base
             with tempfile.TemporaryDirectory() as d:
                 results = self._run_tests(d, commit, base, settings, ticket_file)
-                failed = any(c.name == "tests" and not c.passed for c in results.checks)
-                output = "\n".join(c.output for c in results.checks if c.name == "tests")
+                failed = any(not c.passed for c in results.checks)
+                output = "\n".join(c.output for c in results.checks)
                 try:
                     try:
                         lock = fz.record(d, ticket, commit, started, settings, results.tests,
@@ -144,7 +144,9 @@ class Store:
             if done.returncode:
                 raise mf.FreezeError(f"the setup command failed: {command}")
         # UNFINISHED: the tests run here, not in the builder's isolation.
-        return checks.run(settings, folder, ["tests"])
+        # Each check that writes a test report is a test check, such as `tests` and an
+        # `integration` check that runs the tests a build tag or marker keeps out of it.
+        return checks.run(settings, folder, checks.test_checks(settings))
 
     def _start(self, start: str, commit: str) -> str:
         """The full commit a ticket started from. Raise FreezeError unless it passed the

@@ -20,6 +20,7 @@ from pathlib import Path
 
 from gate import junit
 from gate import precommit_config as pc
+from gate import settings as st
 
 
 @dataclass
@@ -47,17 +48,19 @@ class Results:
         return cls([CheckResult(**c) for c in data["checks"]], data["tests"])
 
 
-# The project's own commands never need a secret. Their code may be written by the AI.
+# The project's own commands get no secret by default. Their code may be written by the AI.
 SECRET_ENDINGS = ("_TOKEN", "_API_KEY", "_SECRET", "_PASSWORD")
 # Without these, the AI's code cannot reach your SSH agent or Tollgate's key and state.
-DROPPED = ("PYTHONPATH", "SSH_AUTH_SOCK", "TOLLGATE_KEYS", "TOLLGATE_STATE")
+DROPPED = st.DROPPED_NAMES
 
 
-def project_env() -> dict:
+def project_env(keep=()) -> dict:
     """The environment for the project's own commands: without Tollgate's import path,
-    so Tollgate's modules cannot shadow the project's, and without any secret."""
+    so Tollgate's modules cannot shadow the project's, and without any secret. keep names
+    the variables a check's `env` lets through, such as the token of a test server that
+    integration tests need: you set it, and only that check gets it."""
     return {k: v for k, v in os.environ.items()
-            if k not in DROPPED and not k.upper().endswith(SECRET_ENDINGS)}
+            if k not in DROPPED and (k in keep or not k.upper().endswith(SECRET_ENDINGS))}
 
 
 def _tail(text: str, lines: int = 40) -> str:
@@ -76,6 +79,13 @@ def command_of(check: dict, workdir) -> tuple:
         return None, f"the hook {check['hook']} is not in {pc.CONFIG}"
     return ["pre-commit", "run", check["hook"], "--all-files", "--hook-stage", stage,
             "--color", "never"], ""
+
+
+def test_checks(settings: dict) -> list:
+    """The checks that run tests: `tests`, and each check that writes a test report, such
+    as an `integration` check for the tests a build tag or marker keeps out of `tests`."""
+    return [name for name, check in settings["checks"].items()
+            if name == "tests" or check.get("report")]
 
 
 def run(settings: dict, workdir, only=None) -> Results:
@@ -98,7 +108,8 @@ def run(settings: dict, workdir, only=None) -> Results:
             try:
                 proc = subprocess.run(
                     command, shell=isinstance(command, str), cwd=workdir, capture_output=True,
-                    text=True, check=False, timeout=minutes * 60, env=project_env(),
+                    text=True, check=False, timeout=minutes * 60,
+                    env=project_env(check.get("env", ())),
                 )
                 result = CheckResult(name, proc.returncode == 0, False,
                                      _tail(proc.stdout + proc.stderr))
