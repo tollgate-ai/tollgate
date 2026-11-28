@@ -10,6 +10,7 @@ from pathlib import Path
 from gate import freeze, state
 from gate import manifest as mf
 from gate import plan as pl
+from gate.gitio import fingerprint
 from gate.store import Store, StoreError
 from tests.fakes import RUN_TESTS, TICKET
 from tests.helpers import Repo, write_checks
@@ -283,6 +284,26 @@ class LockPlanTest(StoreCase):
                    .replace("There is no shout.", "Shout exists."))
         with self.assertRaisesRegex(StoreError, "changes ticket T-1"):
             self.store.lock_plan("retries")
+
+    def test_an_amend_may_change_only_the_ticket_it_names(self):
+        self.plan_branch()
+        self.store.lock_plan("retries")
+        amended = TICKET.replace("plan: demo", "plan: retries").replace(
+            "seams: ", "seams: retry.newRecorder, ", 1)
+        commit = self.amend(ticket_text=amended, add=False)
+        # An amend that names another ticket does not let T-1 change.
+        with self.assertRaisesRegex(StoreError, "changes ticket T-1"):
+            self.store.lock_plan("retries", amend="T-2")
+        found = state.read_record(Path(self.store.lock_plan("retries", amend="T-1")))
+        self.assertEqual((found["commit"], found["version"], found["amended"]),
+                         (commit, 2, "T-1"))
+        self.assertEqual(found["files"][mf.ticket_path("T-1")],
+                         fingerprint(amended.encode()))
+
+    def test_an_amend_needs_a_locked_plan(self):
+        self.plan_branch()
+        with self.assertRaisesRegex(StoreError, "not locked, so it has no ticket to amend"):
+            self.store.lock_plan("retries", amend="T-1")
 
 
 class QuestionTest(StoreCase):

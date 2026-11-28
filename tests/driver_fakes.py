@@ -154,7 +154,9 @@ class FakeStore:
         self.freezes += 1
         return str(path)
 
-    def lock_plan(self, task: str) -> str:
+    def lock_plan(self, task: str, amend: str = "") -> str:
+        self.amended = [*getattr(self, "amended", []), amend] if amend else getattr(
+            self, "amended", [])
         commit = sh(self.project, "git", "rev-parse", f"refs/heads/tg-plan/{task}")
         names = sh(self.project, "git", "diff", "--name-only", f"main...{commit}").split()
         files = {n: fingerprint(show_bytes(self.project, commit, n)) for n in names}

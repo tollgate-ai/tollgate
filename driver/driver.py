@@ -52,6 +52,8 @@ from gate.tickets import item_of_test
 MAX_REJECTIONS = 2
 MAX_AI_DECISIONS = 2
 MAX_RELOCKS = 1          # the store allows one replacement lock
+OPTIONS = ["retry", "stronger", "split", "park"]
+AMEND = "amend"          # an option only for a ticket of a plan: the task amends the plan lock
 REPLACEMENT = ("The tests are already locked, and this is the one replacement lock. A check "
                "fails on a locked test, or the builder says a locked test is wrong; the "
                "rejected findings say which. Fix the test so that it fails or passes for the "
@@ -377,8 +379,10 @@ class Driver:
                 inputs["replacement"] = REPLACEMENT
             stronger = self.settings["ai"]["stronger_builder"] if st_.stronger else ""
             answer = self.role("test_writer", inputs, command=stronger or None)
+            wrong = answer.data.get("ticket_wrong")
             self.log.add("tests_written", round=n, cost_usd=answer.cost_usd,
-                         tests=answer.data.get("tests"))
+                         tests=answer.data.get("tests"),
+                         **({"ticket_wrong": wrong} if wrong else {}))
             review = self.role("reviewer", {"ticket": self.ticket_text,
                                "tests": answer.data.get("tests", [])}, lens="test_fit")
             missing = [i.id for i in self.ticket.items if i.must and not any(
@@ -414,6 +418,12 @@ class Driver:
             st_.rejections += 1
             self.log.add("tests_rejected", round=n, cost_usd=review.cost_usd, findings=findings)
             rejected = st_.rejected = findings
+            if wrong:
+                # The test writer says the locked ticket itself is wrong. Writing the tests
+                # again cannot fix that, so the claim goes to the advisor now.
+                raise Stop(f"the tests were rejected {st_.rejections} "
+                           f"{'time' if st_.rejections == 1 else 'times'}"
+                           + self.claim(answer, "test writer"))
             if st_.rejections > MAX_REJECTIONS:
                 raise Stop(f"the tests were rejected {st_.rejections} times")
 
@@ -487,15 +497,20 @@ class Driver:
                  f"{c.output}"} for c in failed]
 
     @staticmethod
-    def claim(answer) -> str:
-        """The builder's claim that a locked test is wrong, as a sentence for the advisor's
-        reason, or "". When the try stops, the advisor judges the claim: a retry or a
-        park, or a person who fixes the test by hand."""
-        wrong = answer.data.get("locked_test_wrong")
-        if not wrong:
-            return ""
-        return (". The builder also says a locked test is wrong: "
-                + (wrong if isinstance(wrong, str) else json.dumps(wrong)))
+    def claim(answer, who: str = "builder") -> str:
+        """The role's claims, as sentences for the advisor's reason, or "": that a locked
+        test is wrong (`locked_test_wrong`), or that the locked ticket or plan is wrong
+        (`ticket_wrong`, with what, the evidence, and the change). When the try stops, the
+        advisor judges each claim: a retry or a park, an amend of the ticket, or a person
+        who fixes the test by hand."""
+        out = ""
+        for key, what in (("locked_test_wrong", "a locked test is wrong"),
+                          ("ticket_wrong", "the locked ticket or plan is wrong")):
+            wrong = answer.data.get(key)
+            if wrong:
+                out += (f". The {who} also says {what}: "
+                        + (wrong if isinstance(wrong, str) else json.dumps(wrong)))
+        return out
 
     def send_back(self, st_: history.Ticket, findings: list):
         """Send the tests back to the test writer for the one replacement lock, or park
@@ -535,8 +550,8 @@ class Driver:
             st_.attempts = n
             return
         cost = answer.cost_usd
-        said = {k: answer.data.get(k) for k in ("decisions", "concerns", "locked_test_wrong")
-                if answer.data.get(k)}
+        said = {k: answer.data.get(k) for k in ("decisions", "concerns", "locked_test_wrong",
+                                                "ticket_wrong") if answer.data.get(k)}
         if said:
             self.log.add("builder_said", attempt=n, **said)
         folders, problem = draw_diagrams(self.copy)
@@ -706,6 +721,11 @@ class Driver:
         roles.remove_copy(self.project, self.ticket_id)
         return 0
 
+    def options(self) -> list:
+        """The decisions on a stopped ticket. `amend` only for a ticket of a plan, since
+        the task amends the ticket in the plan lock."""
+        return [*OPTIONS[:2], AMEND, *OPTIONS[2:]] if self.ticket.plan else list(OPTIONS)
+
     def ask_advisor(self, st_: history.Ticket, reason: str, person_only: bool = False) -> bool:
         """Return True to go on with one more try."""
         chain = ["person"] if person_only else self.settings["ai"]["advisor"]
@@ -714,7 +734,7 @@ class Driver:
                 try:
                     found = advisor.ask_person(
                         self.store, self.log, self.log_path, f"ticket {self.ticket_id}", reason,
-                        ["retry", "stronger", "split", "park"])
+                        self.options())
                 except advisor.Waiting as waiting:
                     raise Parked(str(waiting)) from None
                 return self._decided(st_, found["decision"], found["hint"], "a person")
@@ -742,6 +762,8 @@ class Driver:
             if not st_.frozen:
                 st_.rejections, st_.rejected = 0, []
             return True
+        if decision == AMEND and AMEND in self.options():
+            self.request_amend(st_, hint, who)
         if decision == "split":
             # UNFINISHED: the driver does not split a ticket yet. New tickets would need a
             # new plan lock, so you split it by hand and start a task for the parts.
@@ -751,6 +773,36 @@ class Driver:
             raise Parked(reason)
         self.log.add("parked", reason=f"{who} chose {decision}")
         raise Parked(f"{who} chose {decision}")
+
+    def request_amend(self, st_, change: str, who: str):
+        """Park the ticket for the task to amend it in the plan lock, with the change to
+        make. After the tests are locked, the amended ticket needs the one replacement
+        lock, so a ticket that used it stays parked for a person."""
+        if not change.strip():
+            reason = f"{who} chose amend with no change to make"
+        elif st_.frozen and st_.relocks >= MAX_RELOCKS:
+            reason = (f"{who} chose amend, but the ticket used its one replacement lock. "
+                      "Fix the ticket by hand, or split it")
+        else:
+            reason = f"{who} chose amend: the planner changes the ticket: {change.strip()}"
+            self.log.add("parked", reason=reason, decision=AMEND, change=change.strip())
+            raise Parked(reason)
+        self.log.add("parked", reason=reason)
+        raise Parked(reason)
+
+    def apply_amend(self, st_: history.Ticket):
+        """Take the ticket that the task amended: the ticket file in the copy becomes the
+        amended one. After the lock, the copy goes back to the old lock commit first, so
+        the same locked tests are locked again with the new ticket; the builder's code
+        comes back after the lock (carry_over). No locked test changes here."""
+        if st_.relock_from:
+            git(self.copy, "checkout", "-q", "-B", self.branch, st_.relock_from)
+            git(self.copy, "clean", "-q", "-fd")
+        path = Path(self.copy, mf.ticket_path(self.ticket_id))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(self.ticket_text)
+        self.log.add("amend_applied", relock=bool(st_.relock_from))
+        st_.amending = False
 
     def run(self, until: str | None = None) -> int:
         """until="frozen" stops once the tests are frozen, for a roadmap's checklist."""
@@ -793,6 +845,8 @@ class Driver:
             lock.release()
 
     def _loop(self, st_: history.Ticket) -> int:
+        if st_.amending:
+            self.apply_amend(st_)
         while True:
             try:
                 while not st_.frozen:
