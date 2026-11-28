@@ -838,6 +838,10 @@ class Driver:
                     self.log.hold_while(lambda: session.replaying(self.project))
                 if not (in_session and st_.state != "not started"):
                     self.log.add("started", attempts_done=st_.attempts)
+                if st_.amend_wanted:
+                    # Amend was chosen: the task changes the ticket in the plan lock first.
+                    # Running the ticket now would stop on the old count again and ask anew.
+                    return 3
                 question = advisor.pending(self.log_path)
                 if question:
                     # Read the answer before doing anything else.

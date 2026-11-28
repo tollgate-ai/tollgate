@@ -203,6 +203,23 @@ class QuestionTest(AmendCase):
         self.assertEqual(self.task.amend_wanted("demo-1")["change"],
                          "add the seam app.loud_name")
 
+    def test_a_ticket_waits_for_its_amend_and_asks_no_new_question(self):
+        # Amend was chosen, and the task has not changed the ticket yet. A second run of
+        # the ticket must hand back to the task, not stop on the old count and ask again.
+        d = self.driver(Roles())
+        st_ = self.asked(d)
+        n = next(iter(self.store.open_questions()))
+        self.store.answer(n, "tollgate decide amend add the seam app.loud_name")
+        with self.assertRaises(Parked):
+            d.ask_advisor(st_, "the tests were rejected 3 times", person_only=True)
+        d.log.close()
+        log = str(Path(d.log_path))
+        before = [e["event"] for e in read(log)]
+        self.assertEqual(self.driver(Roles()).run(), 3)
+        self.assertEqual([e["event"] for e in read(log)][len(before):].count("waiting_for_advisor"), 0)
+        self.assertEqual(self.store.open_questions(), {})
+        self.assertTrue(history.replay(read(log)).amend_wanted)
+
     def test_a_ticket_with_no_plan_has_no_amend_option(self):
         d = self.driver(Roles(), text=self.task.read_locked(
             ".tollgate/tickets/demo-1/ticket.md").replace("plan: demo\n", ""))
