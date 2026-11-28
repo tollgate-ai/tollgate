@@ -501,6 +501,24 @@ class MissingSeamsTest(unittest.TestCase):
         self.assertFalse(self.allowed(method.replace("method Do)", "method Run)"), files, seams))
         self.assertFalse(self.allowed(method.replace("flow.Spec", "flow.Plan"), files, seams))
 
+    def test_a_member_of_a_seam_is_allowed(self):
+        # The seam is a type, so the builder adds its fields and methods too, and a test
+        # that sets one does not compile on it either.
+        seams = ["internal/flow.Spec", "internal/flow.Tx"]
+        files = ["internal/command/register_test.go"]
+        field = ("internal/command/register_test.go:52:3: unknown field Do in struct literal "
+                 "of type flow.Spec[testParams]\n")
+        self.assertTrue(self.allowed(field, files, seams), "Do is a member of flow.Spec")
+        self.assertTrue(self.allowed(field.replace("flow.Spec", "flow.Tx"), files, seams))
+        self.assertFalse(self.allowed(field.replace("flow.Spec", "flow.Plan"), files, seams))
+        self.assertFalse(self.allowed(field.replace("flow.Spec", "other.Spec"), files, seams))
+        self.assertFalse(self.allowed(field, files, ["internal/flow.Tx"]))
+        method = ("internal/command/register_test.go:60:9: s.Do undefined (type "
+                  "*flow.Spec[testParams] has no field or method Do)\n")
+        self.assertTrue(self.allowed(method, files, seams))
+        other = "internal/command/register_test.go:37:56: undefined: flow.Result\n"
+        self.assertFalse(self.allowed(other, files, seams), "flow.Result is no seam's member")
+
     def test_a_name_that_owns_a_seam_is_allowed(self):
         # The seam is a method, so the builder adds its type too, and a test that names
         # the type does not compile on it either.
