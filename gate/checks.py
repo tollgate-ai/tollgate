@@ -184,9 +184,13 @@ def only_missing_seams(output: str, files: list, seams: list) -> bool:
 
 def _names_seam_or_owner(parts: list, seam: list) -> bool:
     """True when the parts end the seam's parts, or end a leading run of them: `ports.JobState`
-    names the owner of the seam `internal/ports.JobState.Live`, which the builder adds too."""
+    names the owner of the seam `internal/ports.JobState.Live`, which the builder adds too.
+    Also true when a leading run of the parts ends the seam's parts: `flow.Spec.Do` names a
+    member of the seam `internal/flow.Spec`, and the builder adds the members of a seam."""
     n = len(parts)
-    return any(seam[k - n:k] == parts for k in range(n, len(seam) + 1))
+    if any(seam[k - n:k] == parts for k in range(n, len(seam) + 1)):
+        return True
+    return any(parts[:m] == seam[-m:] for m in range(1, min(n, len(seam) + 1)))
 
 
 def main(argv=None) -> int:
