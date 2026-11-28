@@ -5,8 +5,8 @@
 The driver asks before each try. Five rules, each number from the settings
 `stop`:
 
-- tries: the ticket used its tries (`attempts`, 3 by default). Each retry the
-  advisor grants after the tests are locked adds one.
+- tries: the ticket used its tries (`attempts`, 3 by default). Each retry, or
+  amend of the ticket, that the advisor grants after the tests are locked adds one.
 - same failure: the last try failed the same way as the try before it: the
   same failed checks, or the same failed checklist items at the same score.
 - time: the last try ran past `attempt_minutes` (30 by default).
@@ -24,7 +24,7 @@ from driver import history
 
 GO = "go on"
 TRY_ENDS = ("try_failed", "try_passed")
-RETRY = ("retry", "stronger")
+RETRY = ("retry", "stronger", "amend")
 COST_STOP = ("the ticket cost", "the task cost")
 
 

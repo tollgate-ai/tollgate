@@ -213,15 +213,21 @@ class Store:
             raise mf.FreezeError(f"{path} differs from the approved ticket")
         return (source, {"files": {path: approved}}) if source else (None, None)
 
-    def lock_plan(self, task: str) -> str:
+    def lock_plan(self, task: str, amend: str = "") -> str:
         """Lock the approved plan of a task into plans/<task>.json. Return its path.
 
         A plan already locked may get a new version, from a new commit: the plan of
         the fix round after the review of the whole task. The new version must keep every
         ticket of the old one, unchanged; it may add tickets. The old record moves to
-        plans/replaced/<task>.<version>.json."""
+        plans/replaced/<task>.<version>.json.
+
+        amend names the one locked ticket that the new version may change, after the
+        advisor or a person decided `amend` on it. The ticket must stay in the plan, and
+        every other ticket must stay unchanged. The record names it under `amended`."""
         if not pl.ID.match(task or ""):
             raise StoreError(f"not a valid task id: {task!r}")
+        if amend and not fz.TICKET_ID.match(amend):
+            raise StoreError(f"not a valid ticket id: {amend!r}")
         path = state.path(self.project, "plans", f"{task}.json")
         commit = commit_of(self.project, f"refs/heads/tg-plan/{task}")
         if not commit:
@@ -234,6 +240,8 @@ class Store:
                 raise StoreError(f"the plan lock of task {task} cannot be read: {err}") from None
             if old["commit"] == commit:
                 raise StoreError(f"the plan of task {task} is already locked at this commit")
+        elif amend:
+            raise StoreError(f"the plan of task {task} is not locked, so it has no ticket to amend")
         try:
             found = plantag.record(self.project, task, commit)
         except pl.PlanError as err:
@@ -246,11 +254,18 @@ class Store:
         if old is not None:
             plan_file = pl.plan_path(task)
             for name, digest in old["files"].items():
-                if name != plan_file and name.endswith("/ticket.md") and \
-                        found["files"].get(name) != digest:
-                    ticket = Path(name).parent.name
+                if name == plan_file or not name.endswith("/ticket.md"):
+                    continue
+                ticket = Path(name).parent.name
+                if ticket == amend and name in found["files"]:
+                    continue
+                if found["files"].get(name) != digest:
                     raise StoreError(f"the new plan changes ticket {ticket}, which the old "
                                      "plan locked; a new version may only add tickets")
+            if amend and mf.ticket_path(amend) not in old["files"]:
+                raise StoreError(f"ticket {amend} is not in the locked plan of task {task}")
+            if amend:
+                found["amended"] = amend
             found["version"] = old.get("version", 1) + 1
             kept = state.path(self.project, "plans", "replaced", f"{task}.{old.get('version', 1)}.json")
             kept.parent.mkdir(parents=True, exist_ok=True)

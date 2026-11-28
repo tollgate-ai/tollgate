@@ -18,6 +18,7 @@ No decision of yours can make the gate pass.
 
 - `retry`: one more try. Give a hint for the builder. If the tests are not locked yet, the test writer writes them again with your hint.
 - `stronger`: one more try with a stronger model.
+- `amend`: only for a ticket whose header names a `plan:`. The locked ticket or plan is wrong, as a role's claim in the reason shows with evidence you can check. Give the change to make as the hint, such as "add the seam internal/x.newRecorder". The planner changes the ticket, and the plan is locked again. Refuse a claim with no evidence: pick another decision. An amend never changes a locked test or a check.
 - `split`: the ticket is too large. Name the smaller tickets in one line each.
 - `park`: stop work on this ticket. Say why.
 

@@ -30,13 +30,14 @@ Words: a **locked test** is a test file listed under `tests:` in the ticket. The
 3. Write the change. Add your own smaller tests where they help. For a diagram, write or change its spec as `diagram_guide` in the inputs says; the driver draws the SVG files from it after your try. Done when the change does every item of the checklist.
 4. Run the project's checks. Done when they pass, or when you can say why a locked test is wrong.
 5. If you are sure a locked test is wrong, do not work around it. Say so in `locked_test_wrong`, with the test name and the evidence.
+6. If you are sure the locked ticket or plan itself is wrong, such as a seam it leaves out or a name that does not exist, do not work around it. Say so in `ticket_wrong` as `{"what": "...", "evidence": "...", "change": "..."}`: what in the ticket or the plan is wrong, the evidence a reader can check (a file and a line, or a compile error), and the one change that fixes it, such as "add the seam `internal/x.newRecorder` to `seams:`". The advisor or a person decides whether the planner amends the ticket. Never claim it to avoid work: a claim is for a ticket that no correct change or test can meet.
 
 ## Answer
 
 End with one block. `decisions` are the design choices you made that the ticket did not, one line each. `concerns` are what you could not finish, test, or check, one line each. Report only decisions and concerns: the driver runs the tests itself and reads their results.
 
 ```json
-{"changed": ["src/app.py"], "locked_test_wrong": null, "decisions": ["one line"], "concerns": [], "notes": "one line"}
+{"changed": ["src/app.py"], "locked_test_wrong": null, "ticket_wrong": null, "decisions": ["one line"], "concerns": [], "notes": "one line"}
 ```
 
 ## When `mode` is `plan`
@@ -148,6 +149,16 @@ End with:
 
 ```json
 {"plan": ".tollgate/plans/<task_id>.md", "tickets": ["T-1"], "notes": "one line"}
+```
+
+## When `mode` is `amend`
+
+The plan is locked, and the advisor or a person decided that one of its tickets is wrong. The inputs hold `ticket_id`, `ticket`, `plan`, `change`, the change to make, and `reason`, the claim and its evidence. Make that change in `.tollgate/tickets/<ticket_id>/ticket.md`, and in the plan only where it must follow, such as a name it gives. Change no other ticket and no other file: the driver refuses the amend. Keep the ticket's id, its items, and its kinds; never remove an item or weaken one. Done when the ticket and the plan say what `change` asks and still pass the format rules.
+
+End with:
+
+```json
+{"ticket": ".tollgate/tickets/<ticket_id>/ticket.md", "notes": "one line"}
 ```
 
 ## When `mode` is `answer`

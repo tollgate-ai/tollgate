@@ -37,6 +37,8 @@ Words: an **item** is one line of the ticket's checklist. A **seam** is a public
 7. If `hint` is in the inputs, the tests were rejected too many times and the advisor sent them back to you with it. Follow it. Done when your tests do what the hint asks.
 8. If `approval_hint` is in the inputs, it is what the advisor said when it approved the plan. Follow it where the ticket allows: the ticket wins. Done when your tests follow it, or you say in `notes` why the ticket does not allow it.
 
+9. If you are sure the locked ticket itself is wrong, so that no correct test can meet it, say so in `ticket_wrong` as `{"what": "...", "evidence": "...", "change": "..."}`: what in the ticket or the plan is wrong, the evidence a reader can check (a file and a line, or a compile error), and the one change that fixes it, such as "add the seam `internal/x.newRecorder` to `seams:`". The advisor or a person decides whether the planner amends the ticket. Never claim it to avoid work: a claim is for a ticket that no correct test can meet. An example: an item asks for a direct test of a function that is not in `seams:`. Done when the claim names its evidence.
+
 You may not change any file outside the test files of the ticket. Do not commit, push, or merge: the driver commits the tests.
 
 ## Answer
@@ -44,5 +46,5 @@ You may not change any file outside the test files of the ticket. Do not commit,
 End with one block. List each test that covers an item, new or existing, with its item, its file, and its name. The driver locks each of their files whole, with this list as the map of tests to items.
 
 ```json
-{"tests": [{"item": "C1", "file": "tests/test_x.py", "name": "test_c1_retries_twice"}, {"item": "C5", "file": "tests/test_calc.py", "name": "test_add"}], "notes": "one line"}
+{"tests": [{"item": "C1", "file": "tests/test_x.py", "name": "test_c1_retries_twice"}, {"item": "C5", "file": "tests/test_calc.py", "name": "test_add"}], "ticket_wrong": null, "notes": "one line"}
 ```
