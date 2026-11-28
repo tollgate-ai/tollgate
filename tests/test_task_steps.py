@@ -101,6 +101,92 @@ class MinorFindingsTest(TaskCase):
         self.assertEqual(first, [dict(MAJOR, lens="simplicity"), dict(MINOR, lens="simplicity")])
 
 
+NEW_MAJOR = {"level": "major", "text": "the word greeting is vague in Goal"}
+BLOCKING = {"level": "blocking", "text": "the plan says main.py exists; it does not"}
+
+
+class LaterRoundTest(TaskCase):
+    """From round 2 on, a round reviews the last answer: the change and the earlier
+    findings."""
+
+    def fix_once(self, inputs):
+        if "The code is in app.py." not in self.plan_file.read_text():
+            self.fix_plan(inputs)
+
+    def reviewer_inputs(self, lens):
+        return [i for n, ln, i in self.task.role.calls if n == "reviewer" and ln == lens]
+
+    def rounds(self):
+        return [e["round"] for e in self.events("plan_reviewed")]
+
+    def test_round_2_gets_the_diff_and_the_earlier_findings_with_their_answers(self):
+        self.task.role = Script({"simplicity": [[MAJOR]]}, fix=self.fix_once)
+        self.assertEqual(self.task.review_plan(), [])
+        first, second = self.reviewer_inputs("simplicity")
+        self.assertNotIn("diff", first)
+        self.assertNotIn("earlier_findings", first)
+        self.assertIn("+The code is in app.py.", second["diff"])
+        self.assertIn("b/.tollgate/plans/demo.md", second["diff"])
+        self.assertEqual(second["earlier_findings"], [dict(
+            MAJOR, lens="simplicity", answer={"action": "fix", "evidence": "x"})])
+        # Each lens gets its own earlier findings, and the fresh reader still no code.
+        fresh = self.reviewer_inputs("fresh_reader")[1]
+        self.assertEqual(fresh["earlier_findings"], [])
+        self.assertNotIn("tickets", fresh)
+
+    def test_a_new_major_on_unchanged_text_does_not_reopen_the_review(self):
+        self.task.role = Script({"simplicity": [[MAJOR], [NEW_MAJOR]]}, fix=self.fix_once)
+        self.assertEqual(self.task.review_plan(), [])
+        self.assertEqual(self.rounds(), [1, 1, 1, 2, 2, 2])
+        demoted = dict(NEW_MAJOR, lens="simplicity", level="minor", was="major")
+        self.assertEqual(self.events("plan_findings_demoted")[0]["findings"], [demoted])
+        # It goes to the builder once, as a minor finding, with no round after it.
+        answers = self.task.role.answers()
+        self.assertEqual(len(answers), 2)
+        self.assertEqual(answers[1]["findings"], [demoted])
+        self.assertEqual(self.events("plan_review_clean")[0]["round"], 2)
+
+    def test_a_blocking_finding_on_unchanged_text_reopens_the_review(self):
+        self.task.role = Script({"simplicity": [[MAJOR], [BLOCKING]]}, fix=self.fix_once)
+        self.assertEqual(self.task.review_plan(), [])
+        self.assertEqual(self.rounds(), [1, 1, 1, 2, 2, 2, 3, 3, 3])
+        self.assertEqual(self.events("plan_findings_demoted"), [])
+        third = self.reviewer_inputs("simplicity")[2]
+        self.assertEqual(third["earlier_findings"][0]["text"], BLOCKING["text"])
+        self.assertEqual(third["diff"], "")   # the second answer changed nothing
+
+    def test_a_major_about_an_earlier_finding_or_the_change_reopens_the_review(self):
+        for about in ("earlier", "change"):
+            with self.subTest(about=about):
+                self.setUp()
+                found = dict(NEW_MAJOR, about=about)
+                self.task.role = Script({"simplicity": [[MAJOR], [found]]}, fix=self.fix_once)
+                self.assertEqual(self.task.review_plan(), [])
+                self.assertEqual(self.rounds(), [1, 1, 1, 2, 2, 2, 3, 3, 3])
+
+    def test_a_minors_only_answer_gets_a_change_only_round(self):
+        self.task.role = Script({"readiness": [[MINOR], [NEW_MAJOR]]}, fix=self.fix_plan)
+        self.assertEqual(self.task.review_plan(), [])
+        # The answer changed the plan, so round 2 reads the change and the minor finding,
+        # and its new major finding on unchanged text keeps it clean: no round 3.
+        second = self.reviewer_inputs("readiness")[1]
+        self.assertIn("+The code is in app.py.", second["diff"])
+        self.assertEqual(second["earlier_findings"][0]["text"], MINOR["text"])
+        self.assertEqual(self.rounds(), [1, 1, 1, 2, 2, 2])
+        self.assertEqual(len(self.task.role.answers()), 1)
+        clean = self.events("plan_review_clean")[0]
+        self.assertEqual(clean["round"], 2)
+        self.assertEqual(clean["minor"][0]["was"], "major")
+
+    def test_the_cap_holds_and_returns_the_open_findings(self):
+        about = dict(NEW_MAJOR, about="change")
+        self.task.role = Script({"simplicity": [[MAJOR]] + [[about]] * 9}, fix=self.fix_plan)
+        found = self.task.review_plan()
+        self.assertEqual(self.rounds(), [r for r in (1, 2, 3, 4) for _ in range(3)])
+        self.assertEqual(found, [{"level": "major", "text": "4 rounds with findings"},
+                                 dict(about, lens="simplicity")])
+
+
 class ApprovalHintTest(TaskCase):
     def test_a_hint_given_with_approve_reaches_the_ticket_roles(self):
         self.task.lock_plan("keep the error text short")

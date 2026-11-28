@@ -22,6 +22,16 @@ Words: a **finding** is one problem. It is `blocking` when the work must not go 
 - If you find nothing, say so. Do not invent a finding.
 - If `decisions` is in the inputs, each one is what the advisor, a person or an AI, decided on this plan before, with its hint. A hint is a source, as an answer is: a fact that a hint states, such as an owner's confirmation, needs no other source. Point to it as the decision's number, from 1.
 
+## A later round of a plan review
+
+If `diff` is in the inputs, this is round 2 or later of a plan review. `diff` is the change to the plan and its tickets since the round before, and `earlier_findings` lists your lens's findings of that round, each with the builder's `answer`. Review the change, not the whole plan again:
+
+1. For each earlier finding, judge whether the answer resolves it. One that is still open is a finding again, with `"about": "earlier"`. A contest that points to evidence you can read resolves it.
+2. For each part of `diff`, judge whether the change adds a problem. Such a finding has `"about": "change"`.
+3. A problem in text that `diff` does not touch was there when an earlier round read it. Report it with `"about": "unchanged"`: it goes to the builder as a minor finding and does not reopen the review. Mark it `blocking` only when it is a real factual error or contradicts the spec.
+
+Done when each earlier finding and each part of `diff` has been judged.
+
 ## Answer
 
 End with one block. The lens says what goes under `items`, if anything.
@@ -30,6 +40,6 @@ End with one block. The lens says what goes under `items`, if anything.
 {"verdict": "pass", "findings": [{"level": "major", "file": "src/app.py", "line": 12, "text": "the problem", "why": "why it matters", "fix": "the fix"}], "items": []}
 ```
 
-`why` and `fix` are one line each. Leave them out when the lens does not ask for them.
+`why` and `fix` are one line each. Leave them out when the lens does not ask for them. `about` is only for a later round of a plan review.
 
 `verdict` is `fail` when any finding is blocking. Otherwise it is `pass`.

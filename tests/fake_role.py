@@ -31,7 +31,8 @@ decision=<d>, checkpoint=<continue or stop>.
 Planner options: plan_sees=<path> (adds what app.py holds in its copy to that file),
 drop_questions=1 (the plan leaves out the open questions of a brief), bad_answer=1 (the
 answer to a plan finding revises the plan with an assumption of two sentences), revise=1 (each
-answer to plan findings adds a line to the plan's Design), bad_plan=1 (every
+answer to plan findings adds a line to the plan's Design, and from round 2 on the plan
+finding is about that change), bad_plan=1 (every
 plan has such an assumption), bad_ticket=1 (the first plan has a ticket with no Checklist).
 Brainstorm options: questions=<n> or always (the builder asks n questions, then states the
 idea; always asks one past the cap), idea_to=<path> (the builder adds each idea input to
@@ -507,8 +508,10 @@ def main() -> int:
         if opts.get("revise"):
             # A real finding is about the plan it read, so it differs in each round.
             text += f" (revision {data.get('plan', '').count('Revised once more.')})"
-        answer({"verdict": "pass", "findings": [{"level": "major", "text": text}]
-                if found else [], "items": []}, cost)
+        finding = {"level": "major", "text": text}
+        if opts.get("revise") and "diff" in data:
+            finding["about"] = "change"   # from round 2 on, it is about the revision
+        answer({"verdict": "pass", "findings": [finding] if found else [], "items": []}, cost)
     elif first == "# Role: reviewer" and any(f"# Lens: {k}\n" in prompt for k in
                                              ("need", "user", "risk", "shape")):
         lens = prompt.split("# Lens: ", 1)[1].splitlines()[0]
