@@ -24,6 +24,12 @@ copy. Its answer saves that work as a commit on refs/tollgate/answers/<key> in
 the copy, and a replay puts the work back, because each try starts again from
 the best try so far.
 
+A writer that waits has edits in its copy that no answer has saved yet. next may
+run again before the answer, and its replay puts the work of earlier answers back
+over those edits. So next first saves the copy of each waiting writer on
+refs/tollgate/waiting/<key>, noted in run/kept/<run>.json, and when the run pauses
+at that writer again, it makes the copy's work tree that saved one again.
+
 A run replays the step it stopped in, and each event of that part was logged by
 the run before, which went at least as far. So when a run pauses, it notes the
 key of the role it paused at in its run's replay note, run/replays/<run>. The next run's logs hold each event
@@ -366,6 +372,75 @@ def restore_work(copy: str, commit: str) -> bool:
     _git(copy, "read-tree", "--reset", "-u", ref)
     _git(copy, "reset", "-q")
     return True
+
+
+def kept_path(project: str, slot: str | None = None) -> Path:
+    """The note of the work that the waiting writers had in their copies when next
+    started: run/kept/<run>.json, {key: {"copy": ..., "work": commit}}."""
+    folder = state.path(project, "run", "kept")
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder / f"{_slot_name(slot) or 'default'}.json"
+
+
+def _read_kept(project: str) -> dict:
+    try:
+        found = json.loads(kept_path(project).read_text())
+    except (OSError, ValueError):
+        return {}
+    return found if isinstance(found, dict) else {}
+
+
+def keep_waiting_work(project: str) -> None:
+    """Before a run replays: save the copy's work tree of each writer that waits in the
+    run, on refs/tollgate/waiting/<key>. The replay puts the work of earlier answers back
+    in the copy, over the edits that the waiting writer made and has not sent yet;
+    put_back_waiting_work restores them when the run pauses at that writer again.
+    A note that is already there stays: the run that wrote it did not reach its pause,
+    so the copy may hold the work of an earlier answer now."""
+    kept = _read_kept(project)
+    for step in read_steps(project):
+        copy = step.get("copy", "")
+        if step["role"] not in WRITERS or not copy or step["key"] in kept:
+            continue
+        if not Path(copy, ".git").exists():
+            continue
+        tree = work_tree(copy)
+        commit = _git(copy, "commit-tree", tree, "-p", "HEAD", "-m",
+                      f"tollgate: the work of the waiting step {step['key'][:12]}")
+        _git(copy, "update-ref", f"refs/tollgate/waiting/{step['key']}", commit)
+        kept[step["key"]] = {"copy": copy, "work": commit}
+    if kept:
+        path = kept_path(project)
+        tmp = path.with_name(f".{path.name}.{os.getpid()}")
+        tmp.write_text(json.dumps(kept, indent=1) + "\n")
+        os.replace(tmp, path)
+
+
+def put_back_waiting_work(project: str, steps: list) -> None:
+    """The run paused: for each step that waits again with the same key and copy, make
+    the copy's work tree the one keep_waiting_work saved, with its edited, new, and
+    deleted files. The index stays at HEAD. Then drop the note of the run."""
+    kept = _read_kept(project)
+    for step in steps:
+        found = kept.get(step["key"])
+        if not isinstance(found, dict) or found.get("copy") != step.get("copy"):
+            continue
+        copy, commit = found["copy"], str(found.get("work") or "")
+        done = subprocess.run(["git", *SAFE, "rev-parse", "-q", "--verify",
+                               f"{commit}^{{tree}}"], cwd=copy, env=safe_env(),
+                              capture_output=True, text=True, check=False)
+        if not commit or done.returncode:
+            continue
+        # The index first holds each file of the copy, so a file the saved tree has not
+        # got goes, even one git does not track.
+        _git(copy, "add", "-A")
+        _git(copy, "read-tree", "--reset", "-u", commit)
+        _git(copy, "reset", "-q")
+    drop_kept(project)
+
+
+def drop_kept(project: str) -> None:
+    kept_path(project).unlink(missing_ok=True)
 
 
 def save_answer(project: str, step: dict, text: str) -> dict:

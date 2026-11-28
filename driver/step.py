@@ -123,6 +123,9 @@ def _paused(project: str, lock_name: str, roadmap: str = "") -> tuple:
         if not steps:
             return {"error": "the driver paused, but no step file is there; run next "
                              "again"}, 1
+        # The replay put the work of earlier answers back in the copy: a writer that
+        # waits again gets back the edits it made before this next.
+        session.put_back_waiting_work(project, steps)
         if roadmap:
             session.note_roadmap(project, roadmap)
             steps = session.read_steps(project)
@@ -132,10 +135,32 @@ def _paused(project: str, lock_name: str, roadmap: str = "") -> tuple:
     return (printed[0] if len(printed) == 1 else {"steps": printed}), 0
 
 
+def _keep(project: str, lock_name: str) -> dict | None:
+    """Under the run lock, save the work of each writer that waits in the run, before
+    the replay changes its copy. Return the error to print when the run is busy."""
+    lock = run_lock(project, lock_name)
+    try:
+        lock.acquire()
+    except Busy as err:
+        return {"error": str(err)}
+    try:
+        session.keep_waiting_work(project)
+    finally:
+        lock.release()
+    return None
+
+
+def _ended(project: str, out: tuple) -> tuple:
+    """A run that ended with no pause and no error waits at no writer any more."""
+    if out[1] == 0 and "error" not in out[0]:
+        session.drop_kept(str(Path(project).resolve()))
+    return out
+
+
 def next_brainstorm(project: str, brainstorm: str, store=None) -> tuple:
     """Run the brainstorm to its next step. Return (what to print, exit code)."""
     with session.in_slot(session.slot_of(brainstorm=brainstorm)):
-        return _next_brainstorm(project, brainstorm, store)
+        return _ended(project, _next_brainstorm(project, brainstorm, store))
 
 
 def _next_brainstorm(project: str, brainstorm: str, store=None) -> tuple:
@@ -148,6 +173,9 @@ def _next_brainstorm(project: str, brainstorm: str, store=None) -> tuple:
     if not bf.ID.match(brainstorm) or not path.exists():
         return {"error": f"the idea is missing: write it to {bf.idea_path(brainstorm)}"}, 1
     try:
+        busy = _keep(project, f"brainstorm-{brainstorm}")
+        if busy:
+            return busy, 1
         code = Brainstorm(project, brainstorm, path.read_text(), store, runner="session").run()
     except Busy as err:
         return {"error": str(err)}, 1
@@ -174,7 +202,7 @@ def _next_brainstorm(project: str, brainstorm: str, store=None) -> tuple:
 def next_step(project: str, task: str, store=None) -> tuple:
     """Run the task to its next step. Return (what to print, exit code)."""
     with session.in_slot(session.slot_of(task=task)):
-        return _next_step(project, task, store)
+        return _ended(project, _next_step(project, task, store))
 
 
 def _next_step(project: str, task: str, store=None) -> tuple:
@@ -185,6 +213,9 @@ def _next_step(project: str, task: str, store=None) -> tuple:
     store = store or Store(project)
     try:
         request = _request(project, task)
+        busy = _keep(project, f"task-{task}")
+        if busy:
+            return busy, 1
         code = Task(project, task, request, store, runner="session").run()
     except Busy as err:
         return {"error": str(err)}, 1
@@ -222,7 +253,7 @@ def _checklist_task(project: str, checklist: str) -> str:
 def next_roadmap(project: str, roadmap_id: str, store=None) -> tuple:
     """Run the roadmap in session mode to its next step. Return (what to print, exit code)."""
     with session.in_slot(session.slot_of(roadmap=roadmap_id)):
-        return _next_roadmap(project, roadmap_id, store)
+        return _ended(project, _next_roadmap(project, roadmap_id, store))
 
 
 def _next_roadmap(project: str, roadmap_id: str, store=None) -> tuple:
@@ -236,6 +267,9 @@ def _next_roadmap(project: str, roadmap_id: str, store=None) -> tuple:
     store = store or Store(project)
     try:
         found = rm.parse(path.read_text())
+        busy = _keep(project, f"roadmap-{roadmap_id}")
+        if busy:
+            return busy, 1
         code = roadmap_driver.run(project, roadmap_id, store, runner="session")
     except Busy as err:
         return {"error": str(err)}, 1
