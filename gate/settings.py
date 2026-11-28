@@ -86,10 +86,13 @@ DEFAULTS = {
              "bad_setting_stops": "", "one_log_line": ""},
 }
 
-CHECK_KEYS = {"hook", "run", "report", "minutes"}
+CHECK_KEYS = {"hook", "run", "report", "minutes", "env"}
 # The one check that runs a command of its own: Tollgate's writing check. Each other check
 # names a hook of the project's .pre-commit-config.yaml, which holds the project's command.
 OWN_CHECK = "writing"
+# The variables no check may get back through `env`: Tollgate's own key, state, import
+# path, and your SSH agent. gate.checks drops them from every check.
+DROPPED_NAMES = ("PYTHONPATH", "SSH_AUTH_SOCK", "TOLLGATE_KEYS", "TOLLGATE_STATE")
 CHECKPOINTS = ("plan", "ticket", "task")
 ISOLATIONS = ("container", "sandbox")
 RUNNERS = ("session", "background")
@@ -130,6 +133,11 @@ def check_one(name: str, check) -> None:
                             f"checks.{name} needs a run command")
     if "hook" in check and "run" in check:
         raise SettingsError(f"checks.{name} has both a hook and a run command")
+    env = check.get("env", [])
+    if not isinstance(env, list) or not all(isinstance(v, str) and v.strip() for v in env):
+        raise SettingsError(f"checks.{name}.env must be a list of variable names")
+    if set(env) & set(DROPPED_NAMES):
+        raise SettingsError(f"checks.{name}.env may not name {min(set(env) & set(DROPPED_NAMES))}")
 
 
 def parse(text: str) -> dict:

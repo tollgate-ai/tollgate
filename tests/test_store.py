@@ -133,6 +133,35 @@ class FreezeTest(StoreCase):
                                     "The test check said:.*the build file is missing"):
             self.store.freeze("T-1")
 
+    def test_the_tests_of_a_second_test_check_are_frozen_with_its_variables(self):
+        # The ticket's tests run only in the `integration` check, as tests behind a build
+        # tag do, and they need a token that the secret filter drops unless `env` names it.
+        r = self.repo
+        r.write("run_integration.py", RUN_TESTS.replace('open("report.xml"',
+                                                        'open("report-integration.xml"'))
+        r.write(".gitignore", "report.xml\nreport-integration.xml\n__pycache__/\n")
+        empty = "<testsuites><testsuite></testsuite></testsuites>"
+        unit = f"{sys.executable} -c \"open('report.xml', 'w').write('{empty}')\""
+        integration = {"run": f"{sys.executable} run_integration.py",
+                       "report": "report-integration.xml", "env": ["TEST_VAULT_TOKEN"]}
+        self.write_settings(checks={"tests": {"run": unit, "report": "report.xml"},
+                                    "integration": integration},
+                            harness=["run_tests.py", "run_integration.py"])
+        r.commit("an integration check")
+        old = os.environ.get("TEST_VAULT_TOKEN")
+        self.addCleanup(lambda: os.environ.pop("TEST_VAULT_TOKEN", None) if old is None
+                        else os.environ.__setitem__("TEST_VAULT_TOKEN", old))
+        os.environ["TEST_VAULT_TOKEN"] = "t"
+        tests = TESTS.replace("import unittest\n", "import os\nimport unittest\n").replace(
+            'self.assertEqual(app.greet("ann"), "hello ann")',
+            'self.assertEqual(os.environ.get("TEST_VAULT_TOKEN"), "t")\n'
+            '        self.assertEqual(app.greet("ann"), "hello ann")')
+        self.ticket_branch(tests=tests)
+        lock = state.read_record(Path(self.store.freeze("T-1")))
+        self.assertEqual(lock["manifest"]["tests"],
+                         ["tests.test_t1::test_c1_shout", "tests.test_t1::test_c2_greet"])
+        self.assertEqual(lock["manifest"]["keeps_behavior"], ["tests.test_t1::test_c2_greet"])
+
     def test_runs_with_mains_harness(self):
         # The ticket's commit weakens the harness so that every test passes; main's copy wins.
         self.repo.git("checkout", "-q", "-b", "tg/T-1", "main")

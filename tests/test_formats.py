@@ -1,6 +1,7 @@
 """Tests for settings, paths, tickets, JUnit reports, manifests, tiers, and checks."""
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -43,6 +44,32 @@ class SettingsTest(unittest.TestCase):
         for checks_, error in cases:
             with self.subTest(checks_), self.assertRaisesRegex(settings.SettingsError, error):
                 settings.parse(f'{{"checks": {checks_}}}')
+
+    def test_a_check_may_name_the_variables_it_gets_through_the_secret_filter(self):
+        found = settings.parse('{"checks": {"integration": {"hook": "check-integration", '
+                               '"report": "r.xml", "env": ["TEST_VAULT_TOKEN"]}}}')
+        self.assertEqual(found["checks"]["integration"]["env"], ["TEST_VAULT_TOKEN"])
+        cases = [
+            ('{"t": {"hook": "t", "env": "TEST_VAULT_TOKEN"}}', "env must be a list"),
+            ('{"t": {"hook": "t", "env": [""]}}', "env must be a list"),
+            ('{"t": {"hook": "t", "env": ["TOLLGATE_KEYS"]}}', "env may not name TOLLGATE_KEYS"),
+            ('{"t": {"hook": "t", "env": ["SSH_AUTH_SOCK"]}}', "env may not name SSH_AUTH_SOCK"),
+        ]
+        for checks_, error in cases:
+            with self.subTest(checks_), self.assertRaisesRegex(settings.SettingsError, error):
+                settings.parse(f'{{"checks": {checks_}}}')
+
+    def test_only_the_variables_a_check_names_pass_the_secret_filter(self):
+        from gate import checks
+        old = {k: os.environ.get(k) for k in ("TEST_VAULT_TOKEN", "OTHER_TOKEN", "TOLLGATE_KEYS")}
+        self.addCleanup(lambda: [os.environ.pop(k, None) if v is None
+                                 else os.environ.__setitem__(k, v) for k, v in old.items()])
+        os.environ.update(TEST_VAULT_TOKEN="t", OTHER_TOKEN="o", TOLLGATE_KEYS="k")
+        self.assertNotIn("TEST_VAULT_TOKEN", checks.project_env())
+        kept = checks.project_env(["TEST_VAULT_TOKEN", "TOLLGATE_KEYS"])
+        self.assertEqual(kept.get("TEST_VAULT_TOKEN"), "t")
+        self.assertNotIn("OTHER_TOKEN", kept)
+        self.assertNotIn("TOLLGATE_KEYS", kept, "a dropped variable never comes back")
 
     def test_isolation_is_container_or_sandbox(self):
         self.assertEqual(settings.parse('{"isolation": "sandbox"}')["isolation"], "sandbox")
@@ -518,6 +545,21 @@ class MissingSeamsTest(unittest.TestCase):
         self.assertTrue(self.allowed(method, files, seams))
         other = "internal/command/register_test.go:37:56: undefined: flow.Result\n"
         self.assertFalse(self.allowed(other, files, seams), "flow.Result is no seam's member")
+
+    def test_a_bare_name_in_a_test_inside_a_seam_package_is_allowed(self):
+        # The seam is a whole package, and the test sits in it, so the compiler names the
+        # members it lacks with no package prefix.
+        seams = ["internal/api/gen/common", "make gen"]
+        files = ["internal/api/gen/common/common_test.go"]
+        out = ("internal/api/gen/common/common_test.go:33:9: undefined: Unauthorized\n"
+               "internal/api/gen/common/common_test.go:40:2: undefined: StrictServerInterface\n")
+        self.assertTrue(self.allowed(out, files, seams))
+        self.assertFalse(self.allowed(out, files, ["internal/api/gen/platform"]))
+        other = out.replace("internal/api/gen/common/", "internal/api/gen/common/sub/")
+        self.assertFalse(self.allowed(other, [f.replace("common/", "common/sub/") for f in files],
+                                      seams), "a sub-folder is another package")
+        typo = "internal/api/gen/common/common_test.go:5:2: expected ';', found x\n"
+        self.assertFalse(self.allowed(typo, files, seams), "a syntax error is no missing name")
 
     def test_a_name_that_owns_a_seam_is_allowed(self):
         # The seam is a method, so the builder adds its type too, and a test that names
