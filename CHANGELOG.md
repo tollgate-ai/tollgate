@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.15.0](https://github.com/tollgate-ai/tollgate/compare/v0.14.3...v0.15.0) (2026-11-28)
+
+
+### Features
+
+* **checks:** run each check that writes a report as a test check, with the variables it names ([#182](https://github.com/tollgate-ai/tollgate/issues/182)) ([813fe8c](https://github.com/tollgate-ai/tollgate/commit/813fe8c46e15f4ec2a82f871e9026052373d371b))
+* **driver:** amend a locked ticket when a role shows it is wrong ([#187](https://github.com/tollgate-ai/tollgate/issues/187)) ([32975a0](https://github.com/tollgate-ai/tollgate/commit/32975a0d7ef0eb36f9bf30da53d078436a8beab3))
+
+
+### Bug Fixes
+
+* **analysis:** read a fact with no valid citation as assumed ([#183](https://github.com/tollgate-ai/tollgate/issues/183)) ([3edfb4c](https://github.com/tollgate-ai/tollgate/commit/3edfb4cddda21d607a664ede05efd98ca050db35))
+* **driver:** review only the change in plan review rounds after the first ([#184](https://github.com/tollgate-ai/tollgate/issues/184)) ([cd46989](https://github.com/tollgate-ai/tollgate/commit/cd46989681df450705f6a950cf4efd68ce1e732a))
+
 ## [0.14.3](https://github.com/tollgate-ai/tollgate/compare/v0.14.2...v0.14.3) (2026-11-28)
 
 
