@@ -1,7 +1,7 @@
 {
   "name": "tollgate",
   "description": "Let AI write your code, and merge only what works: tests are written first, the AI cannot change them, and a change reaches main only when a program on your machine sees them pass.",
-  "version": "0.14.3",
+  "version": "0.15.0",
   "author": {
     "name": "Mohamed Rekiba"
   },
