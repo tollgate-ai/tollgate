@@ -15,6 +15,7 @@ STATES = {
     "try_failed": "building", "try_started": "building", "frozen": "frozen",
     "tests_sent_back": "tests written", "relocked": "frozen",
     "tests_reviewed": "tests written", "tests_written": "tests written", "started": "started",
+    "ticket_amended": "amended",
 }
 TRY_ENDS = ("try_failed", "try_passed")
 REASONS = ("parked", "waiting_for_advisor", "stopped")
@@ -44,6 +45,7 @@ class Ticket:
     relocks: int = 0           # the tests sent back after the lock: at most one replacement
     fallback: str = ""         # a try that passed but for major findings: it has a pass record
     fallback_attempt: int = 0  # its try number; a later try that does not pass falls back to it
+    amending: bool = False     # the plan lock amended the ticket; the driver has not taken it yet
 
 
 def better(score: int, best: int) -> bool:
@@ -74,6 +76,19 @@ def replay(events: list) -> Ticket:
             t.rejected = e.get("findings", [])
             t.relock_from, t.relocks = e.get("lock", ""), t.relocks + 1
             t.fallback, t.fallback_attempt = "", 0   # its pass record is of the old lock
+        elif kind == "ticket_amended":
+            # The task amended the ticket in the plan lock. Before the lock the test writer
+            # writes the tests again; after it, the same tests are locked again with the
+            # new ticket, as the one replacement lock.
+            t.amending, t.hint = True, e.get("change", "")
+            if t.frozen:
+                t.relock_from, t.relocks = t.frozen, t.relocks + 1
+                t.frozen, t.tests_done, t.rejections, t.rejected = "", True, 0, []
+                t.fallback, t.fallback_attempt = "", 0
+            else:
+                t.tests_done, t.rejections, t.rejected = False, 0, []
+        elif kind == "amend_applied":
+            t.amending = False
         elif kind == "relocked":
             # The build goes on from the best try, merged onto the replacement lock.
             t.relock_from, t.best_commit, t.best_score = "", e.get("commit", ""), -1

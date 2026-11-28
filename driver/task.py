@@ -62,6 +62,8 @@ MAX_ROUNDS = 4
 OPEN_LEVELS = ("blocking", "major")
 TASK_TIER = 2   # the review of the whole task reads like a tier 2 review: the review lens only
 FIX_ROUNDS = 1  # the fix rounds a task may run after a failed review of the whole task
+MAX_AMENDS = 2  # the amends of one ticket in the plan lock
+LOCKS = ("plan_locked", "plan_amended")   # the events that lock the plan at a new commit
 
 
 def analyze(role, log, copy: str, request: str, task_id: str, spec=()) -> None:
@@ -155,14 +157,15 @@ class Task:
     def read_locked(self, path):
         """A file of the plan as the plan lock has it: the tickets are built from the
         approved plan, never from a plan the builder is still writing in the copy."""
-        locked = [e for e in read(self.log_path) if e["event"] == "plan_locked"]
+        locked = [e for e in read(self.log_path) if e["event"] in LOCKS]
         if not locked:
             return self.read_copy(path)
         from gate.gitio import show_bytes
         data = show_bytes(self.copy, locked[-1]["commit"], path)
         return data.decode() if data is not None else None
 
-    def check_plan(self) -> list:
+    def check_plan(self, amend: str = "") -> list:
+        """The plan's problems. amend names the locked ticket that an amend may change."""
         text = self.read_copy(pl.plan_path(self.id))
         if text is None:
             return [f"{pl.plan_path(self.id)} was not written"]
@@ -177,7 +180,7 @@ class Task:
                 and not Path(self.logs, f"{t}.jsonl").exists()]
         problems = [f"ticket id {t} is already used by an earlier lock; pick a new id"
                     for t in used]
-        return (problems + self.required_files(plan) + self.kept_tickets(plan)
+        return (problems + self.required_files(plan) + self.kept_tickets(plan, amend)
                 + self.brief_questions(plan) + pl.check_tickets(plan, self.read_copy))
 
     def required_files(self, plan) -> list:
@@ -218,8 +221,9 @@ class Task:
                  and "checkpoint" not in e]
         return {"decisions": found} if found else {}
 
-    def kept_tickets(self, plan) -> list:
-        """A new version of a locked plan keeps each ticket of the old one, unchanged."""
+    def kept_tickets(self, plan, amend: str = "") -> list:
+        """A new version of a locked plan keeps each ticket of the old one, unchanged, but
+        for the ticket that an amend names, which it must still list."""
         path = state.path(self.project, "plans", f"{self.id}.json")
         if not path.exists():
             return []
@@ -230,6 +234,8 @@ class Task:
                 continue
             tid = Path(name).parent.name
             text = self.read_copy(name)
+            if tid == amend and tid in plan.tickets and text is not None:
+                continue
             if tid not in plan.tickets or text is None or fingerprint(text.encode()) != digest:
                 problems.append(f"ticket {tid} is locked by the approved plan; keep it, unchanged, "
                                 "and add new tickets for the fix")
@@ -401,7 +407,7 @@ class Task:
 
     def locked_ids(self) -> list:
         """The tickets that the plan's last lock holds, in a fix round; [] before a lock."""
-        locked = [e for e in read(self.log_path) if e["event"] == "plan_locked"]
+        locked = [e for e in read(self.log_path) if e["event"] in LOCKS]
         return list(locked[-1].get("tickets", [])) if locked else []
 
     def locked_inputs(self) -> dict:
@@ -417,7 +423,7 @@ class Task:
         problems = self.kept_tickets_problems()
         if not problems:
             return
-        commit = [e for e in read(self.log_path) if e["event"] == "plan_locked"][-1]["commit"]
+        commit = [e for e in read(self.log_path) if e["event"] in LOCKS][-1]["commit"]
         for tid in self.locked_ids():
             git(self.copy, "checkout", commit, "--", f".tollgate/tickets/{tid}")
         self.log.add("plan_invalid", round=round_no, problems=problems)
@@ -595,6 +601,11 @@ class Task:
             if code == 5:
                 # The ticket's role waits for your session; the task waits with it.
                 raise session.Pause(session.read_step(self.project) or {"role": "role"})
+            if code == 3 and self.amend_wanted(tid):
+                # The advisor or a person chose amend: the plan lock gets the amended
+                # ticket, and the ticket goes on with it.
+                self.amend_ticket(tid, self.amend_wanted(tid))
+                return self.build_tickets()
             self.log.add("ticket_done", ticket=tid, code=code)
             done[tid] = code
             if code != 0:
@@ -603,6 +614,73 @@ class Task:
             self.ticket_checkpoint(tid)
             start = self.ready_commit(tid) or start
         return done
+
+    def amend_wanted(self, tid: str) -> dict | None:
+        """The ticket's open request to amend it: its last `parked` event with the decision
+        amend, when no `ticket_amended` came after it. None otherwise."""
+        wanted = None
+        for e in read(str(Path(self.logs, f"{tid}.jsonl"))):
+            if e["event"] == "parked":
+                wanted = e if e.get("decision") == "amend" else None
+            elif e["event"] == "ticket_amended":
+                wanted = None
+        return wanted
+
+    def amend_ticket(self, tid: str, wanted: dict) -> None:
+        """The planner changes the locked ticket, and the plan if it must, in the task's
+        copy, by the change the advisor or a person gave. The store locks the plan again
+        with only that ticket changed. The task log gets plan_amended with the old and new
+        fingerprints of the ticket and the reason; the ticket log gets ticket_amended, so
+        its driver takes the new ticket. Locked tests stay as they are: only the plan and
+        the ticket change here."""
+        done = sum(1 for e in read(self.log_path)
+                   if e["event"] == "plan_amended" and e.get("ticket") == tid)
+        if done >= MAX_AMENDS:
+            raise Parked(f"ticket {tid} was amended {done} times; fix it by hand")
+        lock = [e for e in read(self.log_path) if e["event"] in LOCKS][-1]
+        path = f".tollgate/tickets/{tid}/ticket.md"
+        if git(self.copy, "rev-parse", "HEAD") != lock["commit"]:
+            git(self.copy, "checkout", "-q", "-B", f"tg-plan/{self.id}", lock["commit"])
+        # The ticket as the lock holds it: in session mode the planner's step replays, and
+        # its edits are already in the copy.
+        from gate.gitio import fingerprint, show_bytes
+        old = show_bytes(self.copy, lock["commit"], path).decode()
+        answer = self.role("builder", {
+            "mode": "amend", "task_id": self.id, "ticket_id": tid, "ticket": old,
+            "plan": self.read_copy(pl.plan_path(self.id)), "change": wanted.get("change", ""),
+            "reason": wanted.get("reason", "")})
+        problems = self.check_plan(amend=tid)
+        if self.read_copy(path) == old:
+            problems.append(f"the planner did not change ticket {tid}")
+        # Only .tollgate: in a fix round the copy's work tree shows the built change.
+        changed = git(self.copy, "ls-files", "-m", "-o", "-d", "--exclude-standard", "--",
+                      ".tollgate").splitlines()
+        allowed = (pl.plan_path(self.id), path)
+        problems += [f"an amend changes only ticket {tid} and the plan, not {name}"
+                     for name in sorted(set(changed)) if name not in allowed]
+        try:
+            if tid not in pl.parse(self.read_copy(pl.plan_path(self.id))).tickets:
+                problems.append(f"the amended plan must keep ticket {tid}")
+        except (pl.PlanError, TypeError):
+            pass    # check_plan names it
+        if problems:
+            self.log.add("plan_amend_refused", ticket=tid, problems=problems,
+                         cost_usd=answer.cost_usd)
+            git(self.copy, "checkout", "-q", "-f", lock["commit"], "--", ".tollgate")
+            git(self.copy, "clean", "-q", "-fd", "--", ".tollgate")
+            raise Parked(f"the amend of ticket {tid} was refused: " + "; ".join(problems))
+        git(self.copy, "add", "-A", "--", *allowed)
+        git(self.copy, "commit", "-q", "-m", f"docs({self.id}): amend ticket {tid}")
+        fetch_branch(self.project, self.copy, f"tg-plan/{self.id}")
+        record = self.store.lock_plan(self.id, amend=tid)
+        new = self.read_copy(path)
+        hashes = {"old": fingerprint(old.encode()), "new": fingerprint(new.encode())}
+        self.log.add("plan_amended", ticket=tid, path=record,
+                     commit=git(self.copy, "rev-parse", "HEAD"), old_commit=lock["commit"],
+                     tickets=lock.get("tickets", []), reason=wanted.get("reason", ""),
+                     change=wanted.get("change", ""), cost_usd=answer.cost_usd, **hashes)
+        with Log(str(Path(self.logs, f"{tid}.jsonl")), ticket=tid, task=self.id) as log:
+            log.add("ticket_amended", change=wanted.get("change", ""), **hashes)
 
     def ready_commit(self, tid: str) -> str:
         from driver import history
