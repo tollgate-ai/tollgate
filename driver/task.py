@@ -95,6 +95,14 @@ def analyze(role, log, copy: str, request: str, task_id: str, spec=()) -> None:
     raise Parked("the analysis could not be read: " + "; ".join(problems))
 
 
+def with_answers(findings: list, answers: list) -> list:
+    """Each finding with the builder's answer to it, {action, evidence}, from the answers
+    that point to it by number; {} when the builder did not answer it."""
+    by = {a["finding"]: {k: a[k] for k in ("action", "evidence") if k in a}
+          for a in answers if isinstance(a, dict) and isinstance(a.get("finding"), int)}
+    return [dict(f, answer=by.get(i, {})) for i, f in enumerate(findings)]
+
+
 class Task:
     def __init__(self, project: str, task_id: str, request: str, store=None, driver_args=None,
                  runner: str | None = None):
@@ -261,13 +269,24 @@ class Task:
         In a fix round, `fix` holds the findings of the review of the whole task: the lenses
         that judge need and readiness read the plan against them too.
 
+        Round 1 reads the whole plan. From round 2 on, a round reviews the last answer: each
+        lens also gets `earlier_findings`, its findings that went to the builder, each with
+        the builder's answer, and `diff`, the change to the plan and its tickets since the
+        round before. A blocking finding keeps a round open. A major finding does only when
+        the lens marks it `about` "earlier" (an earlier finding is not resolved) or "change"
+        (the change adds the problem). Any other major finding is on text that an earlier
+        round accepted: it is logged as `plan_findings_demoted` and goes to the builder as a
+        minor finding.
+
         A minor finding never makes a round unclean, but it goes to the builder: with the
         open findings of its round, or, in a round with none, in one answer step of its
         own. When that answer changes the plan or a ticket, the next round reviews the
         change; a later round with only minor findings is clean. In the last round the
-        minor findings stay in the log, since no round is left to review a change."""
-        open_findings = []
+        minor findings stay in the log, since no round is left to review a change. When the
+        last round still has open findings, they are returned after a line that names the
+        cap."""
         minors_answered = False
+        earlier = None   # the last answer step: what it answered, and the plan it started from
         for round_no in range(1, MAX_ROUNDS + 1):
             problems = self.check_plan()
             if problems:
@@ -279,11 +298,15 @@ class Task:
             text = self.read_copy(pl.plan_path(self.id))
             plan = pl.parse(text)
             tickets = {t: self.read_copy(f".tollgate/tickets/{t}/ticket.md") for t in plan.tickets}
-            findings, minors = [], []
-            asked = [("reviewer", {"plan": text} if lens == "fresh_reader" else {
+            later = earlier is not None
+            diff = self.plan_diff(earlier, text, tickets) if later else ""
+            findings, minors, demoted = [], [], []
+            asked = [("reviewer", {**({"plan": text} if lens == "fresh_reader" else {
                 "plan": text, "tickets": tickets, "request": self.request,
                 "analysis": self.analysis_text(), **({"fix": fix} if fix else {}),
-                **self.decision_inputs()}, lens) for lens in PLAN_LENSES]
+                **self.decision_inputs()}),
+                **({"earlier_findings": [f for f in earlier["findings"] if f.get("lens") == lens],
+                    "diff": diff} if later else {})}, lens) for lens in PLAN_LENSES]
             # The lenses read the same plan and not one another: in session mode they run
             # at once, and the round goes on once each has answered.
             answers = self.roles_at_once(asked)
@@ -296,14 +319,28 @@ class Task:
                                          "text": f"the reviewer did not answer: {err}"})
                         continue
                 self.log.add("plan_reviewed", lens=lens, round=round_no, cost_usd=data.cost_usd)
-                found = [dict(f, lens=lens) for f in data.data.get("findings", [])
-                         if isinstance(f, dict)]
-                findings += [f for f in found if f.get("level") in OPEN_LEVELS]
-                minors += [f for f in found if f.get("level") == "minor"]
+                for f in data.data.get("findings", []):
+                    if not isinstance(f, dict):
+                        continue
+                    f = dict(f, lens=lens)
+                    level = f.get("level")
+                    if level == "blocking" or (level == "major" and (
+                            not later or f.get("about") in ("earlier", "change"))):
+                        findings.append(f)
+                    elif level == "major":
+                        demoted.append(dict(f, level="minor", was="major"))
+                    elif level == "minor":
+                        minors.append(f)
+            if demoted:
+                self.log.add("plan_findings_demoted", round=round_no, findings=demoted)
+            minors = demoted + minors
             if not findings:
                 if minors and not minors_answered and round_no < MAX_ROUNDS:
                     minors_answered = True
-                    if self.answer_minors(round_no, minors, text, tickets):
+                    answered = self.answer_minors(round_no, minors, text, tickets)
+                    if answered is not None:
+                        earlier = {"findings": with_answers(minors, answered),
+                                   "plan": text, "tickets": tickets}
                         continue
                 self.log.add("plan_review_clean", round=round_no,
                              **({"minor": minors} if minors else {}))
@@ -318,31 +355,49 @@ class Task:
                          and isinstance(a.get("finding"), int) and a["finding"] < len(findings)]
             self.log.add("plan_answered", round=round_no, cost_usd=answer.cost_usd,
                          answers=answers, escalated=len(escalated))
-            open_findings = escalated
             if escalated:
                 return escalated
+            earlier = {"findings": with_answers(findings + minors, answers),
+                       "plan": text, "tickets": tickets}
             problems = self.check_plan()
             if problems:
                 self.log.add("plan_invalid", problems=problems)
                 self.write_plan(problems)
-        return open_findings or [{"level": "major", "text": f"{MAX_ROUNDS} rounds with findings"}]
+        return [{"level": "major", "text": f"{MAX_ROUNDS} rounds with findings"}] + findings
 
-    def answer_minors(self, round_no: int, minors: list, text: str, tickets: dict) -> bool:
+    def plan_diff(self, earlier: dict, text: str, tickets: dict) -> str:
+        """The unified diff of the plan and its tickets, from the plan that the last answer
+        step started from to the one the copy holds now. "" when nothing changed."""
+        import difflib
+        old = {pl.plan_path(self.id): earlier["plan"],
+               **{f".tollgate/tickets/{t}/ticket.md": v for t, v in earlier["tickets"].items()}}
+        new = {pl.plan_path(self.id): text,
+               **{f".tollgate/tickets/{t}/ticket.md": v for t, v in tickets.items()}}
+        out = []
+        for path in [*new, *(p for p in old if p not in new)]:
+            a, b = old.get(path) or "", new.get(path) or ""
+            out += difflib.unified_diff(a.splitlines(keepends=True), b.splitlines(keepends=True),
+                                        f"a/{path}", f"b/{path}")
+        return "".join(out)
+
+    def answer_minors(self, round_no: int, minors: list, text: str, tickets: dict):
         """Give the minor findings of a clean round to the builder, who fixes or contests
-        each one. Return True when the answer changed the plan or a ticket, so the change
-        needs a review round."""
+        each one. Return the builder's answers when the answer changed the plan or a
+        ticket, so the change needs a review round; None when it changed nothing."""
         answer = self.role("builder", {"mode": "answer", "findings": minors,
                                        **self.locked_inputs()})
         self.keep_locked_tickets(round_no)
+        answers = answer.data.get("answers", [])
         self.log.add("plan_answered", round=round_no, cost_usd=answer.cost_usd,
-                     answers=answer.data.get("answers", []), escalated=0, minor=len(minors))
+                     answers=answers, escalated=0, minor=len(minors))
         now = self.read_copy(pl.plan_path(self.id))
         try:
             ids = pl.parse(now).tickets if now is not None else []
         except pl.PlanError:
-            return True
-        return now != text or {t: self.read_copy(f".tollgate/tickets/{t}/ticket.md")
-                               for t in ids} != tickets
+            return answers
+        changed = now != text or {t: self.read_copy(f".tollgate/tickets/{t}/ticket.md")
+                                  for t in ids} != tickets
+        return answers if changed else None
 
     def locked_ids(self) -> list:
         """The tickets that the plan's last lock holds, in a fix round; [] before a lock."""
@@ -395,7 +450,9 @@ class Task:
             self.log.add("plan_approved", by="no checkpoint")
             return {"decision": "approve", "hint": ""}
         reason = ("The plan review is clean." if not open_findings
-                  else f"{len(open_findings)} findings are open after the review.")
+                  else f"{len(open_findings)} findings are open after the review:\n\n"
+                  + "\n".join(f"- {f.get('level', '')}: {f.get('text', '')}"
+                              for f in open_findings))
         if assumptions:
             reason += ("\n\nThe plan lists these assumptions. Send it back with your answers, "
                        "or approve it as it is:\n\n" + "\n".join(f"- {a}" for a in assumptions))
