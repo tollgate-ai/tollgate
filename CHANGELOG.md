@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.2](https://github.com/tollgate-ai/tollgate/compare/v0.15.1...v0.15.2) (2026-11-28)
+
+
+### Bug Fixes
+
+* **driver:** keep a waiting writer's edits when next runs again ([#190](https://github.com/tollgate-ai/tollgate/issues/190)) ([0e0a3b1](https://github.com/tollgate-ai/tollgate/commit/0e0a3b14534458a1bc80ed9a7454c1b0056251a9))
+
 ## [0.15.1](https://github.com/tollgate-ai/tollgate/compare/v0.15.0...v0.15.1) (2026-11-28)
 
 
