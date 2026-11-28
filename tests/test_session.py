@@ -684,6 +684,82 @@ class StepTest(Case):
         self.assertEqual(len(done), 1)
         self.assertIn("4 rounds with findings", json.dumps(done[0]["open"]))
 
+    def until_plan_answer(self, s, store, mode="pass2 planfind=99"):
+        """next and answer until the builder's step that answers the plan's findings."""
+        from tests.fake_role import inputs
+        self.mode = mode
+        code, out = self.next(s, store)
+        for _ in range(40):
+            self.assertEqual(code, 0, out)
+            if out.get("agent") == "tollgate:builder" and inputs(out["prompt"]).get(
+                    "mode") == "answer":
+                return out
+            code, out = self.answer(s, store, out, fake_answer(out, mode))
+        self.fail(f"no builder answer step: {out}")
+
+    def test_next_keeps_the_edits_of_a_builder_that_waits(self):
+        # The builder edits the copy, and next runs again before its answer is sent. The
+        # replay puts back the plan builder's saved work; it must not undo the edits.
+        s, store = self.task_sample()
+        out = self.until_plan_answer(s, store)
+        copy = Path(out["cwd"])
+        plan = copy / ".tollgate/plans/demo.md"
+        ticket = copy / ".tollgate/tickets/demo-1/ticket.md"
+        plan.write_text(plan.read_text() + "\nThe builder's fix.\n")
+        ticket.write_text(ticket.read_text() + "\nThe builder's ticket fix.\n")
+        Path(copy, "added.md").write_text("new\n")
+        Path(copy, "app.py").unlink()                           # a file HEAD tracks
+        Path(copy, ".tollgate/tickets/demo-2/ticket.md").unlink()   # one an answer saved
+        edited = session.work_tree(str(copy))
+        code, again = self.next(s, store)
+        self.assertEqual((code, again["key"]), (0, out["key"]))
+        self.assertIn("The builder's fix.", plan.read_text())
+        self.assertIn("The builder's ticket fix.", ticket.read_text())
+        self.assertEqual(Path(copy, "added.md").read_text(), "new\n")
+        self.assertFalse(Path(copy, "app.py").exists())
+        self.assertFalse(Path(copy, ".tollgate/tickets/demo-2/ticket.md").exists())
+        self.assertEqual(session.work_tree(str(copy)), edited)
+        self.assertEqual(sh(copy, "git", "diff", "--cached", "--name-only"), "")
+        self.assertFalse(session.kept_path(str(s.project), "task-demo").exists())
+        # The answer saves the edits as the builder's work.
+        self.answer(s, store, again, fake_answer(again, "pass2 planfind=99"))
+        work = session.saved(str(s.project), "task-demo", out["key"])["work"]
+        names = sh(copy, "git", "ls-tree", "-r", "--name-only", work).split("\n")
+        self.assertIn("The builder's fix.",
+                      sh(copy, "git", "show", f"{work}:.tollgate/plans/demo.md"))
+        self.assertIn("The builder's ticket fix.",
+                      sh(copy, "git", "show", f"{work}:.tollgate/tickets/demo-1/ticket.md"))
+        self.assertIn("added.md", names)
+        self.assertNotIn("app.py", names)
+        self.assertNotIn(".tollgate/tickets/demo-2/ticket.md", names)
+
+    def test_next_with_no_waiting_edits_leaves_the_copy_as_the_replay_made_it(self):
+        s, store = self.task_sample()
+        out = self.until_plan_answer(s, store)
+        copy = Path(out["cwd"])
+        files = (".tollgate/plans/demo.md", ".tollgate/tickets/demo-1/ticket.md",
+                 ".tollgate/tickets/demo-2/ticket.md", "app.py")
+        before = {f: Path(copy, f).read_text() for f in files}
+        code, again = self.next(s, store)
+        self.assertEqual((code, again["key"]), (0, out["key"]))
+        self.assertEqual({f: Path(copy, f).read_text() for f in files}, before)
+        self.assertEqual(sh(copy, "git", "diff", "--cached", "--name-only"), "")
+
+    def test_a_replay_with_no_waiting_writer_still_puts_back_the_saved_work(self):
+        # A reviewer waits, not a writer: the replay puts the builder's saved work back.
+        s, store = self.task_sample()
+        out = self.until_plan_answer(s, store)
+        plan = Path(out["cwd"], ".tollgate/plans/demo.md")
+        plan.write_text(plan.read_text() + "\nThe builder's fix.\n")
+        fixed = plan.read_text()
+        code, step = self.answer(s, store, out, fake_answer(out, "pass2 planfind=99"))
+        self.assertEqual(code, 0, step)
+        self.assertEqual(step["agent"], "tollgate:reviewer")
+        plan.write_text("not the plan\n")
+        code, again = self.next(s, store)
+        self.assertEqual((code, again["key"]), (0, step["key"]))
+        self.assertEqual(plan.read_text(), fixed)
+
     def test_a_plan_sent_back_by_the_driver_is_replayed_to_its_new_version(self):
         # The driver sends the first plan back, with no README. The next run must replay
         # the new plan's answer and log it, not take the plan as written already.
