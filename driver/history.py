@@ -46,6 +46,7 @@ class Ticket:
     fallback: str = ""         # a try that passed but for major findings: it has a pass record
     fallback_attempt: int = 0  # its try number; a later try that does not pass falls back to it
     amending: bool = False     # the plan lock amended the ticket; the driver has not taken it yet
+    amend_wanted: bool = False  # amend was chosen and the task has not amended the ticket yet
 
 
 def better(score: int, best: int) -> bool:
@@ -62,6 +63,8 @@ def replay(events: list) -> Ticket:
         t.state = STATES.get(kind, t.state)
         if kind in REASONS:
             t.reason = e.get("reason", "")
+        if kind == "parked":
+            t.amend_wanted = e.get("decision") == "amend"
         if kind == "tests_reviewed":
             t.tests_done, t.rejected = True, []
         elif kind == "tests_rejected":
@@ -80,7 +83,7 @@ def replay(events: list) -> Ticket:
             # The task amended the ticket in the plan lock. Before the lock the test writer
             # writes the tests again; after it, the same tests are locked again with the
             # new ticket, as the one replacement lock.
-            t.amending, t.hint = True, e.get("change", "")
+            t.amending, t.hint, t.amend_wanted = True, e.get("change", ""), False
             if t.frozen:
                 t.relock_from, t.relocks = t.frozen, t.relocks + 1
                 t.frozen, t.tests_done, t.rejections, t.rejected = "", True, 0, []
