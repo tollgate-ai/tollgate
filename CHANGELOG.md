@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.14.3](https://github.com/tollgate-ai/tollgate/compare/v0.14.2...v0.14.3) (2026-11-28)
+
+
+### Bug Fixes
+
+* **checks:** count a member of a seam as a seam name ([#180](https://github.com/tollgate-ai/tollgate/issues/180)) ([dd67774](https://github.com/tollgate-ai/tollgate/commit/dd6777497c6916b60d2c1907bf10f901bb409d74))
+* **driver:** key each review on the content it judges ([#179](https://github.com/tollgate-ai/tollgate/issues/179)) ([c8e2a15](https://github.com/tollgate-ai/tollgate/commit/c8e2a153b0463834981bd1462d229c7d3491b382))
+
 ## [0.14.2](https://github.com/tollgate-ai/tollgate/compare/v0.14.1...v0.14.2) (2026-11-28)
 
 
