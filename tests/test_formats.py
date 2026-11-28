@@ -546,6 +546,21 @@ class MissingSeamsTest(unittest.TestCase):
         other = "internal/command/register_test.go:37:56: undefined: flow.Result\n"
         self.assertFalse(self.allowed(other, files, seams), "flow.Result is no seam's member")
 
+    def test_a_bare_name_in_a_test_inside_a_seam_package_is_allowed(self):
+        # The seam is a whole package, and the test sits in it, so the compiler names the
+        # members it lacks with no package prefix.
+        seams = ["internal/api/gen/common", "make gen"]
+        files = ["internal/api/gen/common/common_test.go"]
+        out = ("internal/api/gen/common/common_test.go:33:9: undefined: Unauthorized\n"
+               "internal/api/gen/common/common_test.go:40:2: undefined: StrictServerInterface\n")
+        self.assertTrue(self.allowed(out, files, seams))
+        self.assertFalse(self.allowed(out, files, ["internal/api/gen/platform"]))
+        other = out.replace("internal/api/gen/common/", "internal/api/gen/common/sub/")
+        self.assertFalse(self.allowed(other, [f.replace("common/", "common/sub/") for f in files],
+                                      seams), "a sub-folder is another package")
+        typo = "internal/api/gen/common/common_test.go:5:2: expected ';', found x\n"
+        self.assertFalse(self.allowed(typo, files, seams), "a syntax error is no missing name")
+
     def test_a_name_that_owns_a_seam_is_allowed(self):
         # The seam is a method, so the builder adds its type too, and a test that names
         # the type does not compile on it either.

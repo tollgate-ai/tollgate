@@ -185,12 +185,24 @@ def only_missing_seams(output: str, files: list, seams: list) -> bool:
         if not any(f in line for f in files) or NOT_AN_ERROR.search(line):
             continue
         named += 1
+        file = next((f for f in files if f in line), "")
         if line.lstrip().startswith("-->"):
             line = next((x for x in reversed(lines[:i]) if x.lstrip().startswith("error")), "")
         parts = _missing_name(line)
+        if parts and len(parts) == 1 and _in_seam_folder(file, seams):
+            continue
         if not parts or not any(_names_seam_or_owner(parts, s) for s in seam_parts):
             return False
     return named > 0
+
+
+def _in_seam_folder(file: str, seams: list) -> bool:
+    """True when the file sits right in a folder that a seam names as a whole, such as
+    `internal/api/gen/common`: a test inside that package names its members with no
+    prefix, as in `undefined: Unauthorized`, and the builder adds them all."""
+    folder = str(Path(file).parent) if file else ""
+    return bool(folder) and any("/" in s and "." not in s.rsplit("/", 1)[-1]
+                                and s.strip("/") == folder for s in seams)
 
 
 def _names_seam_or_owner(parts: list, seam: list) -> bool:
