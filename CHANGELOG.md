@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.1](https://github.com/tollgate-ai/tollgate/compare/v0.15.0...v0.15.1) (2026-11-28)
+
+
+### Bug Fixes
+
+* **driver:** a ticket waits for its amend and asks no new question ([#188](https://github.com/tollgate-ai/tollgate/issues/188)) ([6505aa9](https://github.com/tollgate-ai/tollgate/commit/6505aa922fee961e29ec1cfdaa1b36b38b320de5))
+
 ## [0.15.0](https://github.com/tollgate-ai/tollgate/compare/v0.14.3...v0.15.0) (2026-11-28)
 
 
