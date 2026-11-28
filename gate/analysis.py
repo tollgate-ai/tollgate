@@ -60,6 +60,12 @@ class Analysis:
     sections: dict = field(default_factory=dict)   # section name -> [Fact]
 
 
+# A confirmed fact cites code as [path:line] or [path::name], or a folder; a specified fact
+# cites a spec doc as [path] or [path::heading]. A fact that cites neither way is read as
+# assumed, with this note.
+NO_CITATION = "(no valid citation: a confirmed fact cites [path:line] or [path::name], a specified fact [doc] or [doc::heading])"
+
+
 def analysis_path(task_id: str) -> str:
     return f"{ANALYSES}/{task_id}.md"
 
@@ -105,19 +111,15 @@ def parse(text: str) -> Analysis:
             cites = [(m[1], None, m[2].strip() if m[2] else None)
                      for m in SPEC_CITE.finditer(claim)]
             if not cites:
-                raise AnalysisError(
-                    f"a specified fact cites no spec doc: {claim}. A specified fact cites a doc "
-                    "inside a spec path, [path] or [path::heading]. For a fact about code, or a "
-                    "file outside the spec paths, write confirmed with a code citation, or assumed")
+                # As verify() does with a citation it cannot find: the fact stays, as an
+                # assumption, so one citation in the wrong form does not refuse the analysis.
+                status, claim = "assumed", f"{claim} {NO_CITATION}"
         else:
             # A folder citation, [docs/], is kept as the path with its slash, and no line or name.
             cites = [(m[1] + "/" if m[4] else m[1], int(m[2]) if m[2] else None, m[3] or None)
                      for m in CITE.finditer(claim)]
             if status == "confirmed" and not cites:
-                raise AnalysisError(
-                    f"a confirmed fact cites no code: {claim}. Cite [path:line] or [path::name]. "
-                    "For something the project lacks, cite the folder that would hold it, "
-                    "[./] or [docs/]. When you cannot cite, write assumed")
+                status, claim, cites = "assumed", f"{claim} {NO_CITATION}", []
         sections[current].append(Fact(status, claim, cites))
     missing = [s for s in SECTIONS if not sections.get(s)]
     if missing:
