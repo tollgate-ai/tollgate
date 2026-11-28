@@ -82,11 +82,16 @@ class Call:
     log: str
     ticket: str = ""
     task: str = ""
+    # What the role judges that its inputs do not hold, such as work_tree(copy) for
+    # a reviewer that reads the files of the copy. Only the key holds it.
+    content: str = ""
 
 
-def key(role: str, lens: str | None, inputs: dict) -> str:
-    """The name of one question to a role: the same role, lens, and inputs give the same key."""
-    data = json.dumps([role, lens or "", inputs], sort_keys=True, separators=(",", ":"))
+def key(role: str, lens: str | None, inputs: dict, content: str = "") -> str:
+    """The name of one question to a role: the same role, lens, inputs, and content give
+    the same key. With no content, the key is the one of the role, lens, and inputs."""
+    parts = [role, lens or "", inputs] + ([content] if content else [])
+    data = json.dumps(parts, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(data.encode()).hexdigest()
 
 
@@ -327,14 +332,21 @@ def work_ref(found_key: str) -> str:
     return f"refs/tollgate/answers/{found_key}"
 
 
-def save_work(copy: str, found_key: str) -> str:
-    """Save the copy's work tree as a commit on work_ref(key), with HEAD as its parent.
-    HEAD, the index, and the work tree do not change. Return the commit."""
+def work_tree(copy: str) -> str:
+    """The git tree of the copy's work tree, with each file git does not ignore, in any
+    language. The same files give the same tree. HEAD, the index, and the work tree do
+    not change."""
     with tempfile.TemporaryDirectory() as tmp:
         env = {**os.environ, "GIT_INDEX_FILE": str(Path(tmp, "index"))}
         _git(copy, "read-tree", "HEAD", env=env)
         _git(copy, "add", "-A", env=env)
-        tree = _git(copy, "write-tree", env=env)
+        return _git(copy, "write-tree", env=env)
+
+
+def save_work(copy: str, found_key: str) -> str:
+    """Save the copy's work tree as a commit on work_ref(key), with HEAD as its parent.
+    HEAD, the index, and the work tree do not change. Return the commit."""
+    tree = work_tree(copy)
     commit = _git(copy, "commit-tree", tree, "-p", "HEAD", "-m",
                   f"tollgate: the work of the answer {found_key[:12]}")
     _git(copy, "update-ref", work_ref(found_key), commit)
@@ -401,7 +413,7 @@ class Session:
         of them only once each is answered."""
         answers, waiting = [], []
         for call in calls:
-            found_key = key(call.role, call.lens, call.inputs)
+            found_key = key(call.role, call.lens, call.inputs, call.content)
             found = saved(call.project, call.log, found_key)
             if found and (not found.get("work") or restore_work(call.copy, found["work"])):
                 if found_key == _replay_key(call.project):

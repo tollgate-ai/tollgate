@@ -308,14 +308,14 @@ class Driver:
 
     # Helpers.
 
-    def call(self, name, inputs, lens=None, command=None) -> session.Call:
+    def call(self, name, inputs, lens=None, command=None, content="") -> session.Call:
         s = self.settings
         command = command or (s["ai"]["reviewer"] if name == "reviewer" else s["ai"]["builder"])
         return session.Call(name, inputs, lens, command, name, self.copy, self.project,
-                            self.ticket_id, self.ticket_id, self.ticket.plan)
+                            self.ticket_id, self.ticket_id, self.ticket.plan, content)
 
-    def role(self, name, inputs, lens=None, command=None):
-        return self.caller(self.call(name, inputs, lens, command))
+    def role(self, name, inputs, lens=None, command=None, content=""):
+        return self.caller(self.call(name, inputs, lens, command, content))
 
     def lock(self) -> dict | None:
         """The ticket's lock as the store wrote it. The driver reads it only to put back
@@ -379,8 +379,11 @@ class Driver:
             answer = self.role("test_writer", inputs, command=stronger or None)
             self.log.add("tests_written", round=n, cost_usd=answer.cost_usd,
                          tests=answer.data.get("tests"))
+            # The inputs name the tests but do not hold them, so the key holds the files
+            # of the copy: new tests of the same names get a review of their own.
             review = self.role("reviewer", {"ticket": self.ticket_text,
-                               "tests": answer.data.get("tests", [])}, lens="test_fit")
+                               "tests": answer.data.get("tests", [])}, lens="test_fit",
+                               content=session.work_tree(self.copy))
             missing = [i.id for i in self.ticket.items if i.must and not any(
                 t.get("item") == i.id for t in answer.data.get("tests", []))]
             findings = review.data.get("findings", []) + [
@@ -586,11 +589,14 @@ class Driver:
         # not one another, so session mode asks them all at once.
         change = self.review.diff(self.copy, self.start, "HEAD") if tier >= 2 else ""
         asked = self.review.lens_inputs(tier, self.ticket_text, change) if tier >= 2 else []
+        # The diffs are cut to a limit, and the reviewers read the files, so each key
+        # holds the files of the try too.
+        tree = session.work_tree(self.copy)
         # `answer` stays the builder's: its claim goes into the stop reason below.
         reviews = session.ask_many(self.caller, [
             self.call("reviewer", {"ticket": self.ticket_text, "tested": tested, "diff": diff},
-                      lens="checklist"),
-            *(self.call("reviewer", inputs, lens=lens) for lens, inputs in asked)])
+                      lens="checklist", content=tree),
+            *(self.call("reviewer", inputs, lens=lens, content=tree) for lens, inputs in asked)])
         for review in reviews:
             if isinstance(review, roles.RoleError):
                 raise review
