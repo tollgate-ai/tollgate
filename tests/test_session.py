@@ -155,6 +155,9 @@ class CallerTest(Case):
         self.assertEqual(k, session.key("reviewer", "test_fit", {"b": 2, "a": 1}))
         self.assertNotEqual(k, session.key("reviewer", "checklist", {"a": 1, "b": 2}))
         self.assertNotEqual(k, session.key("builder", "test_fit", {"a": 1, "b": 2}))
+        # The content the role judges is in the key; with none, the key is as before.
+        self.assertEqual(k, session.key("reviewer", "test_fit", {"a": 1, "b": 2}, ""))
+        self.assertNotEqual(k, session.key("reviewer", "test_fit", {"a": 1, "b": 2}, "t1"))
 
 
 class WorkTest(Case):
@@ -258,6 +261,45 @@ class DriverPauseTest(Case):
         self.assertEqual((second["role"], second["lens"]), ("reviewer", "test_fit"))
         # The test writer's tests are back in the copy for the reviewer.
         self.assertTrue(Path(second["copy"], "tests/test_t1.py").exists())
+
+    FAIL = ('```json\n{"verdict": "fail", "findings": '
+            '[{"level": "blocking", "text": "the test is weak"}]}\n```')
+
+    def rewrite_after_a_rejection(self, change: str):
+        """The test writer writes tests, the test_fit reviewer fails them, and the test
+        writer writes tests of the same names again, with `change` added to the file.
+        Return the first review step and the step the next run of the driver pauses at."""
+        s = self.sample()
+        driver(s)[0].run()
+        first = session.read_step(str(s.project))
+        session.save_answer(str(s.project), first, fake_answer(first))
+        driver(s)[0].run()
+        review = session.read_step(str(s.project))
+        self.assertEqual((review["role"], review["lens"]), ("reviewer", "test_fit"))
+        session.save_answer(str(s.project), review, self.FAIL)
+        driver(s)[0].run()
+        again = session.read_step(str(s.project))
+        self.assertEqual(again["role"], "test_writer")
+        text = fake_answer(again)
+        path = Path(again["copy"], "tests/test_t1.py")
+        path.write_text(path.read_text() + change)
+        session.save_answer(str(s.project), again, text)
+        self.assertEqual(driver(s)[0].run(), 5)
+        return s, review, session.read_step(str(s.project))
+
+    def test_new_tests_of_the_same_names_get_a_new_review(self):
+        s, review, step = self.rewrite_after_a_rejection("\n# A stronger test.\n")
+        self.assertEqual((step["role"], step["lens"]), ("reviewer", "test_fit"))
+        self.assertNotEqual(step["key"], review["key"])
+        self.assertEqual(sum(e["event"] == "tests_rejected" for e in s.log()), 1)
+        # Its saved answers still replay: the next run waits at the same review.
+        self.assertEqual(driver(s)[0].run(), 5)
+        self.assertEqual(session.read_step(str(s.project))["key"], step["key"])
+
+    def test_the_same_tests_again_replay_the_saved_review(self):
+        s, _, step = self.rewrite_after_a_rejection("")
+        self.assertEqual(step["role"], "test_writer")
+        self.assertEqual(sum(e["event"] == "tests_rejected" for e in s.log()), 2)
 
     def test_session_mode_logs_the_cost_as_unknown(self):
         s = self.sample()
@@ -819,6 +861,7 @@ class StepTest(Case):
         self.assertEqual(len(asked), 3)  # the plan twice, then the task checkpoint
 
     def test_tests_the_freeze_refused_are_reviewed_again_once_rewritten(self):
+        from tests.fake_role import inputs
         s, store = self.task_sample()
         reviewed = []
         code, out = self.next(s, store)
@@ -832,14 +875,20 @@ class StepTest(Case):
             if out.get("done") or "parked" in out:
                 break
             if "# Lens: test fit" in out["prompt"]:
-                reviewed.append(out["key"])
+                files = {x["file"] for x in inputs(out["prompt"])["tests"]}
+                reviewed.append((out["key"], files))
             code, out = self.answer(s, store, out, fake_answer(out, "pass2 tw_freeze=1"))
         self.assertTrue(out.get("done"), out)
         events = [e["event"] for e in s.log("demo-1")]
         self.assertEqual(events[:8], [
             "started", "tests_written", "tests_reviewed", "tests_rejected", "tests_written",
             "tests_reviewed", "frozen", "try_started"])
-        self.assertEqual(len(reviewed), 2, "the new tests get their own review")
+        # demo-1's tests are rewritten after the freeze refused them, with the same names,
+        # so they get a second review; demo-2's tests get one.
+        first = [k for k, files in reviewed if "tests/test_t1.py" in files]
+        self.assertEqual(len(first), 2, "the new tests get their own review")
+        self.assertEqual(len(set(first)), 2)
+        self.assertEqual(len(reviewed), 3)
         self.assertEqual(events.count("frozen"), 1)
 
     def test_logging_goes_on_once_a_role_has_no_saved_answer(self):

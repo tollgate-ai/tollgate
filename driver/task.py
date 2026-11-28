@@ -113,17 +113,17 @@ class Task:
         self.runner = runner    # None: the setting `runner` decides
         self.caller = None
 
-    def call(self, name, inputs, lens=None, command=None) -> session.Call:
+    def call(self, name, inputs, lens=None, command=None, content="") -> session.Call:
         s = self.settings
         command = command or (s["ai"]["reviewer"] if name in ("reviewer", "analyst")
                               else s["ai"]["builder"])
         # The builder writes the plan here, so it may write plans and tickets.
         policy = "planner" if name == "builder" else name
         return session.Call(name, inputs, lens, command, policy, self.copy, self.project,
-                            f"task-{self.id}", "", self.id)
+                            f"task-{self.id}", "", self.id, content)
 
-    def role(self, name, inputs, lens=None, command=None):
-        return self.caller(self.call(name, inputs, lens, command))
+    def role(self, name, inputs, lens=None, command=None, content=""):
+        return self.caller(self.call(name, inputs, lens, command, content))
 
     def roles_at_once(self, asked: list) -> list:
         """Ask the roles of [(name, inputs, lens)] that do not depend on one another: at
@@ -572,7 +572,7 @@ class Task:
             findings = found[-1].get("findings", [])
         else:
             plan = pl.parse(self.read_locked(pl.plan_path(self.id)))
-            parts, reviewed = [], []
+            parts, reviewed, trees = [], [], []
             for tid in plan.tickets:
                 ready = [e for e in read(str(Path(self.logs, f"{tid}.jsonl")))
                          if e["event"] == "ready"]
@@ -582,11 +582,14 @@ class Task:
                     start = json.loads(lock.read_text())["base_commit"]
                     parts.append(reviewlib.diff(self.project, start, ready[-1]["commit"]))
                     reviewed.append(tid)
+                    trees.append([git(self.project, "rev-parse", f"{c}^{{tree}}")
+                                  for c in (start, ready[-1]["commit"])])
             change = "\n".join(parts)[:reviewlib.DIFF_LIMIT]
             cost = []
 
             def run_role(lens, inputs):
-                answer = self.role("reviewer", inputs, lens=lens)
+                # The change is cut to a limit, so the key holds each ticket's trees too.
+                answer = self.role("reviewer", inputs, lens=lens, content=json.dumps(trees))
                 cost.append(answer.cost_usd)
                 return answer.data
 
